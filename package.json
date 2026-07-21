@@ -13,6 +13,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:smoke": "node tests/ui-smoke.mjs",
+    "version:check": "node scripts/version.mjs check",
+    "version:set": "node scripts/version.mjs set",
     "tauri": "tauri"
   },
   "dependencies": {

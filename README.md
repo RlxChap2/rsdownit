@@ -1,52 +1,86 @@
 # rsdownit
 
+[![CI](https://github.com/RlxChap2/rsdownit/actions/workflows/build.yml/badge.svg)](https://github.com/RlxChap2/rsdownit/actions/workflows/build.yml)
+
+rsdownit is an open-source desktop app for saving public video and audio. It provides a native download queue, format and quality controls, local history, and a folder picker without requiring a command line.
+
 ![rsdownit workbench](docs/screenshot.png)
 
-rsdownit is a Windows-first desktop downloader for public video and audio. Paste a link, choose a format and folder, then let the local engine resolve it.
+Windows 10 and 11 are the current release targets. The Tauri and Rust foundation is portable, but managed tool installation and release packaging for macOS and Linux are still in development.
 
-The project does not promise every website. Site markup, authentication and extractor support change. DRM, paywall bypass and private-network URLs are intentionally unsupported.
+## Features
 
-## What works
+- Video, muted-video, and audio-only downloads.
+- Best available quality or a video cap from 2160p to 360p.
+- Native audio, MP3, M4A, Opus, and WAV output, with optional bitrate selection.
+- Download progress, speed, ETA, cancellation, retry, and local history.
+- A native output-folder picker. Existing files are never overwritten.
+- Optional browser cookies for media the user is authorized to access.
+- Optional self-hosted Cobalt fallback. Community instances remain disabled by default.
+- Light and dark themes with responsive desktop and tablet layouts.
+- No telemetry.
+- Signed in-app updates and update checks for managed yt-dlp and FFmpeg tools.
 
-- Video, muted video and audio-only downloads.
-- Best quality or a 2160p–360p video cap.
-- Native audio, MP3, M4A, Opus or WAV, with optional bitrate selection.
-- Native output-folder picker. Existing files are never overwritten.
-- Live progress, speed, ETA, cancel, retry and local history.
-- Optional browser cookies for media the user is allowed to access.
-- Optional self-hosted Cobalt fallback. Community servers are off by default.
-- Light and dark themes. No telemetry.
-- Signed in-app updates with install-now and later options.
-- Automatic update checks for the managed yt-dlp and FFmpeg tools.
+No downloader can guarantee permanent support for every website. Extractors, authentication requirements, and site markup change over time. rsdownit does not bypass DRM, paywalls, or access controls.
 
-Windows 10 and 11 are the current release targets. Tauri keeps the UI and Rust core portable; managed FFmpeg provisioning for macOS and Linux is still planned.
+## How links are resolved
 
-## Resolver order
+rsdownit tries each allowed method in this order:
 
-| Order | Resolver | Purpose |
+| Order | Resolver | Role |
 | --- | --- | --- |
-| 1 | Direct stream | Saves a public media file without another process |
-| 2 | yt-dlp | Local extractor with broad site support; HLS and DASH use native fragment concurrency |
-| 3 | Self-hosted Cobalt | Optional endpoint supplied by the user |
-| 4 | Community Cobalt | Explicit opt-in; sends the media URL to a third party |
-| 5 | HTML probe | Looks for public `og:video`, `<video>`, `<source>` and media links |
+| 1 | Direct stream | Saves a public media file without launching another process |
+| 2 | yt-dlp | Handles supported sites locally, including HLS and DASH streams |
+| 3 | Self-hosted Cobalt | Uses an endpoint configured by the user |
+| 4 | Community Cobalt | Optional third-party fallback that requires explicit consent |
+| 5 | HTML probe | Searches public page metadata and media elements for a direct source |
 
-Managed `yt-dlp` and Windows FFmpeg downloads come from their publisher URLs. rsdownit verifies the published SHA-256 before installing either tool. A system copy on `PATH` can also be used, but is reported as system-provided rather than publisher-verified.
+Managed yt-dlp and Windows FFmpeg binaries are downloaded from publisher URLs and checked against published SHA-256 values before installation. A system copy on `PATH` can also be used, but the app identifies it as system-provided rather than publisher-verified.
 
-## Privacy and safety
+## Privacy and security
 
-- Normal downloads stay local unless an API fallback is enabled.
-- API tokens are kept for the current process and are not written to `settings.json`.
-- Browser cookies are opt-in and passed directly to local `yt-dlp`.
-- `file:`, embedded credentials, localhost, private IP ranges and common local domains are blocked for media URLs.
-- Executable and shortcut filename extensions are blocked in direct downloads.
-- Tauri runs with a restrictive CSP and a small capability set.
+- Downloads stay local unless an API fallback is enabled.
+- API tokens remain in memory and are not written to `settings.json`.
+- Browser-cookie access is opt-in and is passed only to the local yt-dlp process.
+- Media URLs containing embedded credentials, local hostnames, or private IP ranges are rejected.
+- Direct downloads reject executable and shortcut filename extensions.
+- The Tauri window uses a restrictive Content Security Policy and a small capability set.
 
-Read [SECURITY.md](SECURITY.md) before distributing binaries.
+Security reports should follow the private process in [SECURITY.md](SECURITY.md).
 
-## Build on Windows
+## Download and verify a release
 
-Requirements: Node.js 20+, pnpm 11, stable Rust, Microsoft C++ Build Tools and WebView2.
+Windows builds are published on the [Releases page](https://github.com/RlxChap2/rsdownit/releases). Each release includes `SHA256SUMS.txt` and displays the same checksums in its release notes. Signed updater builds also include the updater manifest and signature.
+
+Compare a downloaded file with the published checksum:
+
+```powershell
+Get-FileHash .\rsdownit.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS.txt
+```
+
+The repository also includes a verification helper:
+
+```powershell
+.\scripts\verify-release.ps1 -Manifest .\SHA256SUMS.txt -File .\rsdownit.exe
+```
+
+GitHub build provenance can be checked with the GitHub CLI:
+
+```powershell
+gh attestation verify .\rsdownit.exe --repo RlxChap2/rsdownit
+```
+
+A checksum confirms file identity, while the attestation links the file to this repository's GitHub Actions workflow. Production releases should also use an Authenticode certificate so Windows can verify the publisher.
+
+## Build from source
+
+Requirements:
+
+- Node.js 22.13 or newer; CI uses Node.js 24.
+- pnpm 11.5.1.
+- Stable Rust.
+- Microsoft C++ Build Tools and WebView2 on Windows.
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -54,9 +88,10 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
-Checks used by CI:
+Run the same core checks used in CI:
 
 ```powershell
+pnpm version:check
 pnpm test
 pnpm test:smoke
 pnpm build
@@ -68,52 +103,61 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Three network integration tests are ignored by default. Run them only when real downloads are acceptable:
+Three network integration tests are ignored by default because they download real files. Run them explicitly when that network activity is acceptable:
 
 ```powershell
 Set-Location src-tauri
 cargo test -- --ignored
 ```
 
-## Release verification
+## Publishing a release
 
-Tagged builds can publish signed in-app updates. Add the updater private key to the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret and its password, when used, to `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never commit the private key. The public key is already pinned in `src-tauri/tauri.conf.json`. A tag must match the package version, for example `v0.1.0`.
-
-GitHub Actions publishes installers, the portable executable and `SHA256SUMS.txt`. Compare a downloaded file locally:
+The version command updates `package.json`, Tauri configuration, `Cargo.toml`, and the rsdownit entry in `Cargo.lock` together:
 
 ```powershell
-Get-FileHash .\rsdownit.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS.txt
+pnpm version:set 0.2.0
+pnpm version:check
 ```
 
-For a public GitHub release, verify the signed build provenance:
+Commit the version change, then create and push a matching annotated tag:
 
 ```powershell
-gh attestation verify .\rsdownit.exe --repo RlxChap2/rsdownit
+git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+git commit -m "release: v0.2.0"
+git tag -a v0.2.0 -m "rsdownit v0.2.0"
+git push origin main
+git push origin v0.2.0
 ```
 
-Unsigned local builds may trigger Windows reputation warnings. A checksum proves file identity, not publisher identity; production releases should also use Authenticode signing. The workflow supports an optional `WINDOWS_CERTIFICATE` base64 PFX secret and `WINDOWS_CERTIFICATE_PASSWORD`. App updates are separately verified with Tauri's required update signature.
+The release workflow checks the version and tag before starting tests or the Windows build. A valid tag triggers tests, dependency audits, the Windows build, configured signatures, SHA-256 generation, provenance attestation, and GitHub Release publication. A manual workflow run builds downloadable CI artifacts without publishing a release.
+
+Updater signing uses the `TAURI_SIGNING_PRIVATE_KEY` and optional `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets. Windows Authenticode signing uses a base64-encoded PFX in `WINDOWS_CERTIFICATE` and its password in `WINDOWS_CERTIFICATE_PASSWORD`. Private keys and certificates must never be committed to the repository.
 
 ## Project layout
 
 ```text
 src/app/                     App state and composition
 src/components/              Shared layout and UI controls
-src/features/downloads/      Download form, setup status and history
+src/features/downloads/      Download form, setup status, and history
 src/features/settings/       Settings dialog
 src/features/updates/        Signed update prompt
-src/styles/                  Fonts, design tokens and application styles
-src-tauri/src/downloader.rs  Provider chain, progress and cancellation
-src-tauri/src/providers/     Direct, yt-dlp and Cobalt adapters
+src/styles/                  Fonts, design tokens, and application styles
+src-tauri/src/downloader.rs  Provider chain, progress, and cancellation
+src-tauri/src/providers/     Direct, yt-dlp, and Cobalt adapters
 src-tauri/src/security.rs    URL and filename policy
-src-tauri/src/tools.rs       Tool discovery, download and SHA-256 verification
-tests/ui-smoke.mjs           Playwright desktop and responsive smoke test
+src-tauri/src/tools.rs       Tool discovery, download, and SHA-256 checks
+scripts/version.mjs          Version synchronization and release-tag check
+tests/ui-smoke.mjs           Desktop and responsive Playwright smoke test
 ```
+
+## Contributing
+
+Bug reports and focused pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the local checks and contribution guidelines.
 
 ## Legal
 
-Download only material you own or are permitted to save. Site terms and copyright law still apply. rsdownit does not bypass DRM or paywalls.
+Download only material that may legally be saved. Website terms and copyright law still apply. rsdownit does not bypass DRM or paywalls.
 
 ## License
 
-rsdownit is available under the [MIT License](LICENSE). External tools have separate terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+rsdownit is released under the [MIT License](LICENSE). Bundled and managed external tools retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

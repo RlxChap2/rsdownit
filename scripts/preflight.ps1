@@ -30,7 +30,7 @@ function Test-Tool {
     }
 }
 
-$results += Test-Tool -Name 'Node.js' -Command 'node' -Arguments @('--version') -Severity 'FAIL' -Hint 'Install Node.js 20 or later.'
+$results += Test-Tool -Name 'Node.js' -Command 'node' -Arguments @('--version') -Severity 'FAIL' -Hint 'Install Node.js 22.13 or later.'
 $results += Test-Tool -Name 'pnpm' -Command 'pnpm' -Arguments @('--version') -Severity 'FAIL' -Hint 'Run: corepack enable'
 $results += Test-Tool -Name 'Rust' -Command 'rustc' -Arguments @('--version') -Severity 'FAIL' -Hint 'Install from https://rustup.rs'
 $results += Test-Tool -Name 'Cargo' -Command 'cargo' -Arguments @('--version') -Severity 'FAIL' -Hint 'Cargo ships with rustup.'

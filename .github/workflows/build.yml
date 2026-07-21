@@ -15,7 +15,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Check project version and release tag
+        run: node scripts/version.mjs check
+
   test:
+    needs: version-check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,6 +59,7 @@ jobs:
         run: cargo test
 
   rust-audit:
+    needs: version-check
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -68,7 +80,7 @@ jobs:
 
   build-windows:
     if: github.event_name != 'pull_request'
-    needs: [test, rust-audit]
+    needs: [version-check, test, rust-audit]
     runs-on: windows-latest
     permissions:
       contents: write
@@ -207,3 +219,26 @@ jobs:
           } else {
             gh release create $tag $assets --verify-tag --generate-notes --title "rsdownit $tag"
           }
+          if ($LASTEXITCODE -ne 0) { throw "Could not publish release assets for $tag." }
+
+          $marker = '<!-- rsdownit-sha256 -->'
+          $body = (gh release view $tag --json body --jq .body) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "Could not read release notes for $tag." }
+          $markerIndex = $body.IndexOf($marker)
+          if ($markerIndex -ge 0) { $body = $body.Substring(0, $markerIndex).TrimEnd() }
+
+          $notes = @()
+          if (-not [string]::IsNullOrWhiteSpace($body)) {
+            $notes += $body.TrimEnd()
+            $notes += ''
+          }
+          $notes += $marker
+          $notes += '## SHA-256 checksums'
+          $notes += ''
+          $notes += '```text'
+          $notes += Get-Content artifacts/SHA256SUMS.txt
+          $notes += '```'
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $notes | Set-Content -LiteralPath $notesPath -Encoding utf8
+          gh release edit $tag --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { throw "Could not add checksums to release notes for $tag." }
