@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -6,6 +6,7 @@ import App from "./App";
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.history.replaceState({}, "", "/");
 });
 
 describe("rsdownit app shell", () => {
@@ -55,5 +56,34 @@ describe("rsdownit app shell", () => {
     const toggleName = initialDark ? "Switch to light mode" : "Switch to dark mode";
     await user.click(screen.getByRole("button", { name: toggleName }));
     expect(document.documentElement.classList.contains("dark")).toBe(!initialDark);
+  });
+
+  it("offers a discovered app update now or later", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/?mockUpdate=1");
+    render(<App />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Update available" });
+    expect(within(dialog).getByText("0.1.0 to 0.2.0")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Update now" })).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Later" })).toBeVisible();
+
+    await user.click(within(dialog).getByRole("button", { name: "Later" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Update available" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("completes the browser update flow", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/?mockUpdate=1");
+    render(<App />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Update available" });
+    await user.click(within(dialog).getByRole("button", { name: "Update now" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Update available" })).not.toBeInTheDocument();
+    });
   });
 });

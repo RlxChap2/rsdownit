@@ -76,8 +76,9 @@ export function DownloadComposer({
   const qualityId = useId();
   const formatId = useId();
   const bitrateId = useId();
-  const ready = isProbablyUrl(url);
-  const invalid = url.length > 0 && !ready;
+  const validUrl = isProbablyUrl(url);
+  const ready = validUrl && Boolean(outputFolder.trim());
+  const invalid = url.length > 0 && !validUrl;
 
   return (
     <section className="download-stage" aria-labelledby="download-title">

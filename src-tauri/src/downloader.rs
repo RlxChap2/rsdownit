@@ -1,6 +1,7 @@
 //! Download jobs, provider fallback, cancellation, and progress events.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,6 +12,7 @@ use percent_encoding::percent_decode_str;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
 
 use crate::models::{DownloadMode, DownloadRequest, ProviderKind};
 use crate::providers::cobalt::{
@@ -25,11 +27,14 @@ use crate::security::{
     is_safe_download_filename, secure_get, secure_redirect_policy, validate_api_endpoint,
     validate_remote_target, validate_remote_url,
 };
-use crate::settings::AppSettings;
+use crate::settings::{ApiProviderSettings, AppSettings};
 use crate::storage::{next_available_path, sanitize_filename};
 use crate::tools;
 
 pub const DOWNLOAD_EVENT: &str = "download://update";
+const MAX_API_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_HTML_BYTES: usize = 5 * 1024 * 1024;
+const MAX_STDERR_LINES: usize = 200;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +189,75 @@ fn filename_from_url(url: &str) -> String {
     }
 }
 
+async fn read_response_limited(
+    response: reqwest::Response,
+    limit: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(format!("{label} exceeded the {limit}-byte safety limit."));
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("Could not read {label}: {error}"))?;
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(format!("{label} exceeded the {limit}-byte safety limit."));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn publish_without_overwrite(temp: &Path, requested: PathBuf) -> Result<PathBuf, String> {
+    loop {
+        let target = next_available_path(requested.clone(), |path| path.exists());
+        match tokio::fs::hard_link(temp, &target).await {
+            Ok(()) => {
+                let _ = tokio::fs::remove_file(temp).await;
+                return Ok(target);
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(_) => {
+                let mut destination = match tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&target)
+                    .await
+                {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(format!("Could not create final file: {error}")),
+                };
+                let copy_result = async {
+                    let mut source = tokio::fs::File::open(temp)
+                        .await
+                        .map_err(|error| format!("Could not reopen temporary file: {error}"))?;
+                    tokio::io::copy(&mut source, &mut destination)
+                        .await
+                        .map_err(|error| format!("Could not finalize file: {error}"))?;
+                    destination
+                        .flush()
+                        .await
+                        .map_err(|error| format!("Could not finish final file: {error}"))
+                }
+                .await;
+                drop(destination);
+                if let Err(error) = copy_result {
+                    let _ = tokio::fs::remove_file(&target).await;
+                    return Err(error);
+                }
+                let _ = tokio::fs::remove_file(temp).await;
+                return Ok(target);
+            }
+        }
+    }
+}
+
 /// Streams a URL straight to the output folder. Used by the direct provider
 /// and to fetch resolved links from the API and HTML providers.
 pub async fn stream_to_file(
@@ -223,16 +297,13 @@ pub async fn stream_to_file(
     if !is_safe_download_filename(&name) {
         return Err("The server suggested an unsafe executable filename.".to_string());
     }
-    let target = next_available_path(Path::new(output_dir).join(name), |path| path.exists());
-    let temp = target.with_extension(format!(
-        "{}.part",
-        target
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("bin")
-    ));
+    let requested = Path::new(output_dir).join(&name);
+    let temp = requested.with_file_name(format!(".{name}.{}.part", Uuid::new_v4()));
 
-    let mut file = tokio::fs::File::create(&temp)
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
         .await
         .map_err(|error| format!("Could not create file: {error}"))?;
 
@@ -268,9 +339,10 @@ pub async fn stream_to_file(
             let mut update = JobUpdate::new(id, "downloading");
             update.provider = Some(provider);
             update.speed = Some(format_bytes_per_sec(speed));
-            if let Some(total) = total {
-                update.progress = Some((downloaded as f64 / total as f64) * 100.0);
-                update.eta = Some(format_eta((total - downloaded) as f64 / speed));
+            if let Some(total) = total.filter(|total| *total > 0) {
+                let bounded = downloaded.min(total);
+                update.progress = Some((bounded as f64 / total as f64) * 100.0);
+                update.eta = Some(format_eta(total.saturating_sub(downloaded) as f64 / speed));
             }
             sink(update);
             last_emit = Instant::now();
@@ -283,10 +355,11 @@ pub async fn stream_to_file(
         return Err(format!("Could not finish file: {error}"));
     }
     drop(file);
-    tokio::fs::rename(&temp, &target)
-        .await
-        .map_err(|error| format!("Could not finalize file: {error}"))?;
-    Ok(target)
+    let published = publish_without_overwrite(&temp, requested).await;
+    if published.is_err() {
+        let _ = tokio::fs::remove_file(&temp).await;
+    }
+    published
 }
 
 fn parse_progress_line(line: &str) -> Option<(f64, String, String)> {
@@ -385,12 +458,15 @@ pub async fn ytdlp_download(
     let stderr = child.stderr.take();
 
     let stderr_task = tokio::spawn(async move {
-        let mut lines = Vec::new();
+        let mut lines = VecDeque::with_capacity(MAX_STDERR_LINES);
         if let Some(stderr) = stderr {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 if !line.trim().is_empty() {
-                    lines.push(line);
+                    if lines.len() == MAX_STDERR_LINES {
+                        lines.pop_front();
+                    }
+                    lines.push_back(line);
                 }
             }
         }
@@ -450,13 +526,28 @@ pub async fn ytdlp_download(
             .iter()
             .rev()
             .find(|line| line.contains("ERROR"))
-            .or_else(|| stderr_lines.last())
+            .or_else(|| stderr_lines.back())
             .cloned()
             .unwrap_or_else(|| "yt-dlp could not process this link.".to_string());
         return Err(reason);
     }
 
-    final_path.ok_or_else(|| "yt-dlp finished without a file.".to_string())
+    let final_path = final_path.ok_or_else(|| "yt-dlp finished without a file.".to_string())?;
+    let output_root = std::fs::canonicalize(&request.output_dir)
+        .map_err(|error| format!("Could not verify output folder: {error}"))?;
+    let final_path = std::fs::canonicalize(&final_path)
+        .map_err(|error| format!("Could not verify downloaded file: {error}"))?;
+    if !final_path.is_file() || !final_path.starts_with(&output_root) {
+        return Err("yt-dlp returned a file outside the selected output folder.".to_string());
+    }
+    let file_name = final_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "yt-dlp returned an invalid filename.".to_string())?;
+    if !is_safe_download_filename(file_name) {
+        return Err("yt-dlp returned an unsafe executable filename.".to_string());
+    }
+    Ok(final_path)
 }
 
 /// Calls one Cobalt-compatible endpoint and streams the file it resolves.
@@ -499,12 +590,14 @@ async fn cobalt_fetch(
         http_request = http_request.header("Authorization", header_value);
     }
 
-    let response: CobaltResponse = http_request
+    let response = http_request
         .send()
         .await
         .map_err(|error| format!("API request failed: {error}"))?
-        .json()
-        .await
+        .error_for_status()
+        .map_err(|error| format!("API rejected the request: {error}"))?;
+    let body = read_response_limited(response, MAX_API_RESPONSE_BYTES, "API response").await?;
+    let response: CobaltResponse = serde_json::from_slice(&body)
         .map_err(|error| format!("API returned an unexpected response: {error}"))?;
 
     let media_url = if response.is_downloadable() {
@@ -549,10 +642,7 @@ async fn cobalt_download(
         return Err("No API endpoint configured.".to_string());
     }
 
-    let auth_header = (!api.token.trim().is_empty()).then(|| match api.auth_type.as_str() {
-        "bearer" => format!("Bearer {}", api.token.trim()),
-        _ => format!("Api-Key {}", api.token.trim()),
-    });
+    let auth_header = cobalt_authorization(api);
 
     cobalt_fetch(
         sink,
@@ -569,6 +659,15 @@ async fn cobalt_download(
     .await
 }
 
+fn cobalt_authorization(settings: &ApiProviderSettings) -> Option<String> {
+    let token = settings.token.trim();
+    match (settings.auth_type.as_str(), token.is_empty()) {
+        ("bearer", false) => Some(format!("Bearer {token}")),
+        ("api-key", false) => Some(format!("Api-Key {token}")),
+        _ => None,
+    }
+}
+
 /// Fetches the live list of open community instances, falling back to a
 /// bundled seed list. Cached for the lifetime of the process.
 async fn public_instances() -> Vec<String> {
@@ -583,14 +682,17 @@ async fn public_instances() -> Vec<String> {
             .timeout(std::time::Duration::from_secs(8))
             .build()
             .ok()?;
-        let directory: InstanceDirectory = client
+        let response = client
             .get(INSTANCE_DIRECTORY_URL)
             .send()
             .await
             .ok()?
-            .json()
+            .error_for_status()
+            .ok()?;
+        let body = read_response_limited(response, MAX_API_RESPONSE_BYTES, "instance directory")
             .await
             .ok()?;
+        let directory: InstanceDirectory = serde_json::from_slice(&body).ok()?;
         let ranked = rank_instances(&directory);
         (!ranked.is_empty()).then_some(ranked)
     }
@@ -655,16 +757,17 @@ async fn html_probe_download(
     settings: &AppSettings,
     cancel: &AtomicBool,
 ) -> Result<PathBuf, String> {
-    let html = secure_get(
+    let response = secure_get(
         &request.url,
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) rsdownit",
         std::time::Duration::from_secs(20),
     )
     .await
     .map_err(|error| format!("Could not fetch the page: {error}"))?
-    .text()
-    .await
-    .map_err(|error| format!("Could not read the page: {error}"))?;
+    .error_for_status()
+    .map_err(|error| format!("The page rejected the request: {error}"))?;
+    let html = read_response_limited(response, MAX_HTML_BYTES, "page HTML").await?;
+    let html = String::from_utf8_lossy(&html);
 
     let links = extract_media_links_from_html(&request.url, &html);
     let Some(media_url) = links.first() else {
@@ -911,6 +1014,49 @@ mod tests {
         assert_eq!(format_bytes_per_sec(2_097_152.0), "2.0 MB/s");
         assert_eq!(format_eta(75.0), "1m 15s");
         assert_eq!(format_eta(f64::NAN), "--");
+    }
+
+    #[test]
+    fn sends_api_credentials_only_for_the_selected_authentication_type() {
+        let mut settings = ApiProviderSettings {
+            token: "secret".to_string(),
+            ..ApiProviderSettings::default()
+        };
+        assert_eq!(cobalt_authorization(&settings), None);
+
+        settings.auth_type = "bearer".to_string();
+        assert_eq!(
+            cobalt_authorization(&settings),
+            Some("Bearer secret".to_string())
+        );
+
+        settings.auth_type = "api-key".to_string();
+        assert_eq!(
+            cobalt_authorization(&settings),
+            Some("Api-Key secret".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn publishes_without_replacing_an_existing_download() {
+        let directory = std::env::temp_dir().join(format!("rsdownit-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).expect("creates test directory");
+        let requested = directory.join("video.mp4");
+        let temp = directory.join("video.part");
+        std::fs::write(&requested, b"existing").expect("writes existing file");
+        std::fs::write(&temp, b"new").expect("writes temporary file");
+
+        let published = publish_without_overwrite(&temp, requested.clone())
+            .await
+            .expect("publishes safely");
+
+        assert_eq!(
+            std::fs::read(&requested).expect("reads old file"),
+            b"existing"
+        );
+        assert_eq!(published, directory.join("video (1).mp4"));
+        assert_eq!(std::fs::read(&published).expect("reads new file"), b"new");
+        std::fs::remove_dir_all(&directory).expect("removes test directory");
     }
 
     #[test]

@@ -17,6 +17,20 @@ fn sanitizes_windows_hostile_filenames() {
 }
 
 #[test]
+fn protects_windows_device_names_and_keeps_long_extensions() {
+    assert_eq!(sanitize_filename("CON.mp4"), "_CON.mp4");
+    assert_eq!(sanitize_filename("lpt9"), "_lpt9");
+
+    let sanitized = sanitize_filename(&format!("{}.mp4", "a".repeat(250)));
+    assert_eq!(sanitized.encode_utf16().count(), 180);
+    assert!(sanitized.ends_with(".mp4"));
+
+    let sanitized = sanitize_filename(&format!("{}.mp4", "🎬".repeat(150)));
+    assert!(sanitized.encode_utf16().count() <= 180);
+    assert!(sanitized.ends_with(".mp4"));
+}
+
+#[test]
 fn adds_suffix_when_output_path_exists() {
     let existing = [PathBuf::from("C:/Downloads/video.mp4")];
     let next = next_available_path(PathBuf::from("C:/Downloads/video.mp4"), |path| {

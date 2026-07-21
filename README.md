@@ -21,6 +21,8 @@ Windows 10 and 11 are the current release targets. The Tauri and Rust foundation
 - No telemetry.
 - Signed in-app updates and update checks for managed yt-dlp and FFmpeg tools.
 
+The desktop app checks the signed GitHub release feed at startup. When a newer version is available, it shows the installed and available versions and waits for the user to choose **Update now** or **Later**. Updates are installed only after Tauri verifies the release signature.
+
 No downloader can guarantee permanent support for every website. Extractors, authentication requirements, and site markup change over time. rsdownit does not bypass DRM, paywalls, or access controls.
 
 ## How links are resolved

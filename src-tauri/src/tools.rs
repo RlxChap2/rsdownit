@@ -1,11 +1,15 @@
 //! Finds and provisions yt-dlp and FFmpeg with publisher checksum verification.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
 
 pub const SETUP_EVENT: &str = "setup://progress";
 
@@ -23,6 +27,8 @@ const FFMPEG_WINDOWS_ZIP_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 const FFMPEG_WINDOWS_SHA256_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256";
+const MAX_METADATA_BYTES: usize = 1024 * 1024;
+const TOOL_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,9 +219,10 @@ pub fn locate_tool_in(tools_dir: Option<&Path>, base_name: &str) -> ToolStatus {
 }
 
 async fn fetch_text(url: &str, label: &str) -> Result<String, String> {
-    reqwest::Client::builder()
+    let response = reqwest::Client::builder()
         .user_agent("rsdownit")
-        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("HTTP client error: {error}"))?
         .get(url)
@@ -223,10 +230,24 @@ async fn fetch_text(url: &str, label: &str) -> Result<String, String> {
         .await
         .map_err(|error| format!("Could not download {label}: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("Download of {label} failed: {error}"))?
-        .text()
-        .await
-        .map_err(|error| format!("Could not read {label}: {error}"))
+        .map_err(|error| format!("Download of {label} failed: {error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_METADATA_BYTES as u64)
+    {
+        return Err(format!("{label} exceeded the metadata safety limit."));
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("Could not read {label}: {error}"))?;
+        if body.len().saturating_add(chunk.len()) > MAX_METADATA_BYTES {
+            return Err(format!("{label} exceeded the metadata safety limit."));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|_| format!("{label} was not valid UTF-8."))
 }
 
 fn checksum_for_asset(checksums: &str, asset_name: &str) -> Option<String> {
@@ -264,6 +285,8 @@ async fn download_file(
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .user_agent("rsdownit")
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(TOOL_DOWNLOAD_TIMEOUT)
         .build()
         .map_err(|error| format!("HTTP client error: {error}"))?;
     let response = client
@@ -275,8 +298,16 @@ async fn download_file(
         .map_err(|error| format!("Download of {tool} failed: {error}"))?;
 
     let total = response.content_length();
-    let temp_path = destination.with_extension("part");
-    let mut file = tokio::fs::File::create(&temp_path)
+    let destination_name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(tool);
+    let temp_path =
+        destination.with_file_name(format!(".{destination_name}.{}.part", Uuid::new_v4()));
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
         .await
         .map_err(|error| format!("Could not write {tool}: {error}"))?;
 
@@ -284,22 +315,30 @@ async fn download_file(
     let mut hasher = Sha256::new();
     let mut last_emit = std::time::Instant::now();
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("Download of {tool} interrupted: {error}"))?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-            .await
-            .map_err(|error| format!("Could not write {tool}: {error}"))?;
-        downloaded += chunk.len() as u64;
-        hasher.update(&chunk);
-        if last_emit.elapsed().as_millis() > 250 {
-            report(sink, tool, "downloading", downloaded, total, "Downloading");
-            last_emit = std::time::Instant::now();
+    let write_result: Result<(), String> = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk =
+                chunk.map_err(|error| format!("Download of {tool} interrupted: {error}"))?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|error| format!("Could not write {tool}: {error}"))?;
+            downloaded += chunk.len() as u64;
+            hasher.update(&chunk);
+            if last_emit.elapsed().as_millis() > 250 {
+                report(sink, tool, "downloading", downloaded, total, "Downloading");
+                last_emit = std::time::Instant::now();
+            }
         }
+        file.flush()
+            .await
+            .map_err(|error| format!("Could not finish {tool}: {error}"))
     }
-    tokio::io::AsyncWriteExt::flush(&mut file)
-        .await
-        .map_err(|error| format!("Could not finish {tool}: {error}"))?;
+    .await;
     drop(file);
+    if let Err(error) = write_result {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(error);
+    }
 
     report(
         sink,
@@ -317,15 +356,34 @@ async fn download_file(
         ));
     }
 
-    if destination.exists() {
-        tokio::fs::remove_file(destination)
-            .await
-            .map_err(|error| format!("Could not replace old {tool}: {error}"))?;
+    let backup_path =
+        destination.with_file_name(format!(".{destination_name}.{}.backup", Uuid::new_v4()));
+    let had_previous = destination.exists();
+    if had_previous {
+        if let Err(error) = tokio::fs::rename(destination, &backup_path).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(format!("Could not preserve old {tool}: {error}"));
+        }
     }
 
-    tokio::fs::rename(&temp_path, destination)
-        .await
-        .map_err(|error| format!("Could not finalize {tool}: {error}"))?;
+    if let Err(error) = tokio::fs::rename(&temp_path, destination).await {
+        let restore_error = if had_previous {
+            tokio::fs::rename(&backup_path, destination).await.err()
+        } else {
+            None
+        };
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(match restore_error {
+            Some(restore_error) => format!(
+                "Could not finalize {tool}: {error}. The previous file is at {} because restoration also failed: {restore_error}",
+                backup_path.display()
+            ),
+            None => format!("Could not finalize {tool}: {error}"),
+        });
+    }
+    if had_previous {
+        let _ = tokio::fs::remove_file(&backup_path).await;
+    }
     tokio::fs::write(checksum_path(destination), format!("{actual_sha256}\n"))
         .await
         .map_err(|error| format!("Could not store {tool} checksum: {error}"))?;
@@ -409,10 +467,19 @@ fn extract_ffmpeg_from_zip(zip_path: &Path, target_dir: &Path) -> Result<(), Str
             ));
         }
         let destination = target_dir.join(file_name);
-        let mut output = std::fs::File::create(&destination)
+        let temp = target_dir.join(format!(".{file_name}.{}.part", Uuid::new_v4()));
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
             .map_err(|error| format!("Could not write {file_name}: {error}"))?;
-        std::io::copy(&mut entry, &mut output)
-            .map_err(|error| format!("Could not extract {file_name}: {error}"))?;
+        if let Err(error) = std::io::copy(&mut entry, &mut output) {
+            drop(output);
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("Could not extract {file_name}: {error}"));
+        }
+        drop(output);
+        replace_local_file(&temp, &destination, file_name)?;
         extracted += 1;
     }
 
@@ -424,6 +491,35 @@ fn extract_ffmpeg_from_zip(zip_path: &Path, target_dir: &Path) -> Result<(), Str
         if path.exists() {
             write_local_checksum(&path)?;
         }
+    }
+    Ok(())
+}
+
+fn replace_local_file(source: &Path, destination: &Path, label: &str) -> Result<(), String> {
+    let backup = destination.with_file_name(format!(".{label}.{}.backup", Uuid::new_v4()));
+    let had_previous = destination.exists();
+    if had_previous {
+        if let Err(error) = std::fs::rename(destination, &backup) {
+            let _ = std::fs::remove_file(source);
+            return Err(format!("Could not preserve old {label}: {error}"));
+        }
+    }
+
+    if let Err(error) = std::fs::rename(source, destination) {
+        let restore_error = had_previous
+            .then(|| std::fs::rename(&backup, destination).err())
+            .flatten();
+        let _ = std::fs::remove_file(source);
+        return Err(match restore_error {
+            Some(restore_error) => format!(
+                "Could not install {label}: {error}. The previous file is at {} because restoration also failed: {restore_error}",
+                backup.display()
+            ),
+            None => format!("Could not install {label}: {error}"),
+        });
+    }
+    if had_previous {
+        let _ = std::fs::remove_file(backup);
     }
     Ok(())
 }
@@ -603,6 +699,7 @@ pub fn tools_report<R: Runtime>(app: &AppHandle<R>) -> ToolsReport {
 }
 
 pub async fn ensure_tools<R: Runtime>(app: &AppHandle<R>) -> Result<ToolsReport, String> {
+    let _guard = tool_operation_lock().lock().await;
     let dir = tools_dir(app)?;
     let sink = |progress: SetupProgress| {
         let _ = app.emit(SETUP_EVENT, progress);
@@ -611,6 +708,7 @@ pub async fn ensure_tools<R: Runtime>(app: &AppHandle<R>) -> Result<ToolsReport,
 }
 
 pub async fn refresh_tools<R: Runtime>(app: &AppHandle<R>) -> Result<ToolsReport, String> {
+    let _guard = tool_operation_lock().lock().await;
     let dir = tools_dir(app)?;
     let sink = |progress: SetupProgress| {
         let _ = app.emit(SETUP_EVENT, progress);
@@ -621,7 +719,13 @@ pub async fn refresh_tools<R: Runtime>(app: &AppHandle<R>) -> Result<ToolsReport
 pub async fn check_tool_updates<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<ToolUpdatesReport, String> {
+    let _guard = tool_operation_lock().lock().await;
     check_tool_updates_in(&tools_dir(app)?).await
+}
+
+fn tool_operation_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 #[cfg(test)]

@@ -10,7 +10,10 @@ export function isProbablyUrl(value: string) {
   if (!trimmed) return false;
   try {
     const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
-    return parsed.hostname.includes(".");
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.hostname.includes(".")
+    );
   } catch {
     return false;
   }

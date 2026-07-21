@@ -71,6 +71,8 @@ async function lookupUpdates(target: TauriClient) {
   return {
     app: appResult.status === "fulfilled" ? appResult.value : null,
     tools: toolsResult.status === "fulfilled" ? toolsResult.value : null,
+    appFailed: appResult.status === "rejected",
+    toolsFailed: toolsResult.status === "rejected",
     failed: appResult.status === "rejected" && toolsResult.status === "rejected",
   };
 }
@@ -146,39 +148,56 @@ function App() {
       if (!mounted) return;
       setClient(tauriClient);
 
-      const [folder, settings, report] = await Promise.all([
+      const updatesPromise = lookupUpdates(tauriClient);
+      const [folderResult, settingsResult, reportResult] = await Promise.allSettled([
         tauriClient.getDefaultOutputDir(),
         tauriClient.getSettings(),
         tauriClient.checkTools(),
       ]);
       if (!mounted) return;
-      setOutputFolder(folder);
-      setApiProvider(settings.apiProvider);
-      setCommunityFallback(settings.communityFallback);
-      setConcurrency(settings.concurrency);
-      setCookiesFromBrowser(settings.cookiesFromBrowser);
-      setCookieBrowser(settings.cookieBrowser);
-      setTools(report);
+      if (folderResult.status === "fulfilled") setOutputFolder(folderResult.value);
+      if (settingsResult.status === "fulfilled") {
+        const settings = settingsResult.value;
+        setApiProvider(settings.apiProvider);
+        setCommunityFallback(settings.communityFallback);
+        setConcurrency(settings.concurrency);
+        setCookiesFromBrowser(settings.cookiesFromBrowser);
+        setCookieBrowser(settings.cookieBrowser);
+      }
+      if (reportResult.status === "fulfilled") setTools(reportResult.value);
 
-      unlistenDownload = await tauriClient.onDownloadUpdate(applyDownloadUpdate);
-      unlistenSetup = await tauriClient.onSetupProgress((progress) => {
-        if (progress.phase === "ready" || progress.phase === "error") {
-          setSetupProgress(null);
-          void tauriClient.checkTools().then(setTools);
-          if (progress.phase === "error") {
-            toast.error("Engine setup failed", { description: progress.message });
+      try {
+        unlistenDownload = await tauriClient.onDownloadUpdate(applyDownloadUpdate);
+        unlistenSetup = await tauriClient.onSetupProgress((progress) => {
+          if (progress.phase === "ready" || progress.phase === "error") {
+            setSetupProgress(null);
+            void tauriClient
+              .checkTools()
+              .then(setTools)
+              .catch((error) => {
+                toast.error("Engine status could not be refreshed", {
+                  description: String(error),
+                });
+              });
+            if (progress.phase === "error") {
+              toast.error("Engine setup failed", { description: progress.message });
+            }
+          } else {
+            setSetupProgress(progress);
           }
-        } else {
-          setSetupProgress(progress);
-        }
-      });
+        });
+      } catch (error) {
+        toast.error("App events could not be connected", { description: String(error) });
+      }
 
-      const updates = await lookupUpdates(tauriClient);
+      const updates = await updatesPromise;
       if (!mounted) return;
       setAppUpdate(updates.app);
       setToolUpdates(updates.tools);
       if (updates.app || updates.tools?.updatesAvailable) setUpdateOpen(true);
-    })();
+    })().catch((error) => {
+      if (mounted) toast.error("App initialization failed", { description: String(error) });
+    });
 
     return () => {
       mounted = false;
@@ -286,6 +305,17 @@ function App() {
       toast.error("Update check failed", { description: "Check your connection and try again." });
       return;
     }
+    if (updates.appFailed && !updates.tools?.updatesAvailable) {
+      toast.error("App update check failed", { description: "Check your connection and try again." });
+      return;
+    }
+    if (updates.toolsFailed && !updates.app) {
+      toast.error("Tool update check failed", { description: "Check your connection and try again." });
+      return;
+    }
+    if (updates.appFailed || updates.toolsFailed) {
+      toast.warning("Some updates could not be checked.");
+    }
     setUpdateOpen(true);
   }
 
@@ -294,11 +324,17 @@ function App() {
     setUpdateProgress(null);
     try {
       if (toolUpdates?.updatesAvailable) {
-        setTools(await client.setupTools());
-        setToolUpdates(await client.checkToolUpdates());
+        try {
+          setTools(await client.setupTools());
+          setToolUpdates(await client.checkToolUpdates());
+        } catch (error) {
+          if (!appUpdate) throw error;
+          toast.error("Download tools could not be updated", { description: String(error) });
+        }
       }
       if (appUpdate) {
         await client.installAppUpdate(setUpdateProgress);
+        setUpdateOpen(false);
       } else {
         setUpdateOpen(false);
         toast.success("Download tools updated.");

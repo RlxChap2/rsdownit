@@ -42,6 +42,7 @@ export type TauriClient = {
 
 const FALLBACK_FOLDER = "Downloads";
 const FALLBACK_PICKED_FOLDER = "Downloads\\rsdownit";
+const UPDATE_TIMEOUT_MS = 20_000;
 
 const fallbackSettings: AppSettings = {
   outputFolder: "",
@@ -250,7 +251,11 @@ export async function createTauriClient(): Promise<TauriClient> {
     },
     async checkAppUpdate() {
       const { check } = await import("@tauri-apps/plugin-updater");
-      pendingAppUpdate = await check();
+      if (pendingAppUpdate) {
+        await pendingAppUpdate.close().catch(() => undefined);
+        pendingAppUpdate = null;
+      }
+      pendingAppUpdate = await check({ timeout: UPDATE_TIMEOUT_MS });
       if (!pendingAppUpdate) return null;
       return {
         currentVersion: pendingAppUpdate.currentVersion,
@@ -268,6 +273,8 @@ export async function createTauriClient(): Promise<TauriClient> {
       await pendingAppUpdate.downloadAndInstall((event) => {
         if (event.event === "Started") total = event.data.contentLength;
         if (event.event === "Progress") downloaded += event.data.chunkLength;
+        if (event.event === "Finished") onProgress(100);
+        if (event.event === "Finished") return;
         onProgress(total ? Math.min(100, Math.round((downloaded / total) * 100)) : null);
       });
       const { relaunch } = await import("@tauri-apps/plugin-process");

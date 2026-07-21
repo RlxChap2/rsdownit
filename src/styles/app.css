@@ -1086,6 +1086,17 @@ dialog::backdrop {
   color: var(--color-ink-muted);
 }
 
+.update-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.update-row strong,
+.update-row span {
+  display: block;
+}
+
 .update-row span {
   color: var(--color-ink-muted);
   font-size: var(--text-sm);
