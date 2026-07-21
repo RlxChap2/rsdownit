@@ -1,0 +1,83 @@
+:root {
+  --color-canvas: oklch(0.985 0.008 55);
+  --color-surface: oklch(1 0 0);
+  --color-surface-subtle: oklch(0.965 0.012 55);
+  --color-surface-strong: oklch(0.925 0.018 55);
+  --color-ink: oklch(0.22 0.018 45);
+  --color-ink-muted: oklch(0.51 0.018 45);
+  --color-ink-faint: oklch(0.65 0.016 45);
+  --color-accent: oklch(0.61 0.18 36);
+  --color-accent-hover: oklch(0.56 0.18 36);
+  --color-accent-soft: oklch(0.95 0.04 36);
+  --color-on-accent: oklch(0.99 0.005 30);
+  --color-rule: oklch(0.89 0.018 55);
+  --color-rule-strong: oklch(0.79 0.025 50);
+  --color-focus: oklch(0.55 0.19 30);
+  --color-danger: oklch(0.54 0.2 25);
+  --color-danger-soft: oklch(0.95 0.04 25);
+  --color-success: oklch(0.52 0.13 150);
+  --color-success-soft: oklch(0.95 0.035 150);
+  --color-warning: oklch(0.53 0.14 75);
+  --color-warning-soft: oklch(0.95 0.045 75);
+  --color-overlay: oklch(0.13 0.01 45 / 0.58);
+  --color-shadow: oklch(0.22 0.025 45 / 0.1);
+  --color-accent-glow: oklch(0.82 0.07 34 / 0.18);
+  --color-accent-glow-soft: oklch(0.88 0.045 52 / 0.14);
+
+  --font-display: "Sora Variable", Sora, "Inter Variable", sans-serif;
+  --font-body: "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: clamp(1.75rem, 6vw, 2.75rem);
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-round: 999px;
+  --rule-thin: 1px;
+  --rule-strong: 2px;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-standard: 180ms;
+  --shadow-panel: 0 1rem 3rem var(--color-shadow);
+}
+
+.dark {
+  --color-canvas: oklch(0.17 0.012 45);
+  --color-surface: oklch(0.21 0.014 45);
+  --color-surface-subtle: oklch(0.25 0.014 45);
+  --color-surface-strong: oklch(0.3 0.018 45);
+  --color-ink: oklch(0.95 0.01 55);
+  --color-ink-muted: oklch(0.72 0.015 55);
+  --color-ink-faint: oklch(0.6 0.014 55);
+  --color-accent: oklch(0.72 0.17 36);
+  --color-accent-hover: oklch(0.77 0.16 36);
+  --color-accent-soft: oklch(0.3 0.07 36);
+  --color-on-accent: oklch(0.17 0.01 30);
+  --color-rule: oklch(0.32 0.018 45);
+  --color-rule-strong: oklch(0.43 0.025 45);
+  --color-focus: oklch(0.72 0.18 30);
+  --color-danger: oklch(0.72 0.17 25);
+  --color-danger-soft: oklch(0.3 0.06 25);
+  --color-success: oklch(0.7 0.13 150);
+  --color-success-soft: oklch(0.29 0.045 150);
+  --color-warning: oklch(0.76 0.13 75);
+  --color-warning-soft: oklch(0.3 0.05 75);
+  --color-overlay: oklch(0.08 0.005 45 / 0.74);
+  --color-shadow: oklch(0.05 0.005 45 / 0.34);
+  --color-accent-glow: oklch(0.42 0.09 30 / 0.16);
+  --color-accent-glow-soft: oklch(0.32 0.055 48 / 0.12);
+}
