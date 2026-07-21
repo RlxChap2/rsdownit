@@ -112,13 +112,31 @@ fn ffmpeg_release_checksum_path(tools_dir: &Path) -> PathBuf {
     tools_dir.join("ffmpeg-release.sha256")
 }
 
+fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write as _;
+
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = std::fs::File::open(path)
         .map_err(|error| format!("Could not read downloaded tool: {error}"))?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher)
-        .map_err(|error| format!("Could not verify downloaded tool: {error}"))?;
-    Ok(format!("{:x}", hasher.finalize()))
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer)
+            .map_err(|error| format!("Could not verify downloaded tool: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_digest(hasher.finalize()))
 }
 
 fn managed_integrity(path: &Path) -> Option<String> {
@@ -291,7 +309,7 @@ async fn download_file(
         total,
         "Verifying SHA-256",
     );
-    let actual_sha256 = format!("{:x}", hasher.finalize());
+    let actual_sha256 = hex_digest(hasher.finalize());
     if actual_sha256 != expected_sha256.to_ascii_lowercase() {
         let _ = tokio::fs::remove_file(&temp_path).await;
         return Err(format!(
@@ -609,6 +627,11 @@ pub async fn check_tool_updates<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encodes_digest_bytes_as_lowercase_hex() {
+        assert_eq!(hex_digest([0x00, 0x01, 0xab, 0xff]), "0001abff");
+    }
 
     #[test]
     fn selects_only_the_exact_release_asset_checksum() {
