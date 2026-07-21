@@ -46,6 +46,11 @@ describe("rsdownit app shell", () => {
     expect(screen.getByPlaceholderText("https://cobalt.example.com")).toBeVisible();
     expect(screen.getByRole("switch", { name: "Use browser session" })).toBeVisible();
     expect(screen.getByRole("switch", { name: "Community fallback servers" })).toBeVisible();
+
+    await user.click(screen.getByRole("switch", { name: "Use browser session" }));
+    expect(screen.getByRole("option", { name: "Mozilla Firefox (recommended)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Choose file" }));
+    expect(await screen.findByText("C:\\Users\\Demo\\cookies.txt")).toBeVisible();
   });
 
   it("switches between light and dark themes", async () => {

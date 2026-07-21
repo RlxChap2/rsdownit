@@ -56,6 +56,8 @@ fn provisions_ytdlp_and_runs_it() {
         .expect("tools provision");
 
     assert!(report.yt_dlp.available, "yt-dlp available after ensure");
+    assert!(report.deno.available, "Deno available after ensure");
+    assert!(report.ready, "the full download engine is ready");
     assert!(
         report.yt_dlp.version.is_some(),
         "yt-dlp runs and reports a version: {:?}",
@@ -78,6 +80,7 @@ fn downloads_audio_with_managed_ytdlp() {
 
     let engine_tools = EngineTools {
         yt_dlp_path: report.yt_dlp.path,
+        deno_path: report.deno.managed.then_some(report.deno.path).flatten(),
         ffmpeg_dir: None,
     };
     // A public-domain sample hosted by the Internet Archive.

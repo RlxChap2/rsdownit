@@ -1,5 +1,6 @@
 import {
   CircleAlert,
+  FileText,
   FolderOpen,
   Gauge,
   KeyRound,
@@ -25,6 +26,8 @@ type SettingsDialogProps = {
   concurrency: number;
   cookiesFromBrowser: boolean;
   cookieBrowser: CookieBrowser;
+  cookieBrowserProfile: string;
+  cookieFile: string;
   apiProvider: ApiProviderSettings;
   tools: ToolsReport | null;
   checkingTools: boolean;
@@ -37,6 +40,9 @@ type SettingsDialogProps = {
   onConcurrencyChange: (value: number) => void;
   onCookiesFromBrowserChange: (value: boolean) => void;
   onCookieBrowserChange: (value: CookieBrowser) => void;
+  onCookieBrowserProfileChange: (value: string) => void;
+  onChooseCookieFile: () => void;
+  onRemoveCookieFile: () => void;
   onApiProviderChange: (provider: ApiProviderSettings) => void;
   onSave: () => void;
   onRepairTools: () => void;
@@ -59,6 +65,8 @@ export function SettingsDialog({
   concurrency,
   cookiesFromBrowser,
   cookieBrowser,
+  cookieBrowserProfile,
+  cookieFile,
   apiProvider,
   tools,
   checkingTools,
@@ -71,6 +79,9 @@ export function SettingsDialog({
   onConcurrencyChange,
   onCookiesFromBrowserChange,
   onCookieBrowserChange,
+  onCookieBrowserProfileChange,
+  onChooseCookieFile,
+  onRemoveCookieFile,
   onApiProviderChange,
   onSave,
   onRepairTools,
@@ -172,10 +183,17 @@ export function SettingsDialog({
           {showAdvanced && (
             <>
               <section className="settings-section">
+                <div className="section-title-row auth-heading">
+                  <div>
+                    <h3>Site sign-in</h3>
+                    <p>For private or age-restricted links you can already open in your browser.</p>
+                  </div>
+                  <KeyRound aria-hidden="true" />
+                </div>
                 <label className="toggle-row">
                   <span>
                     <strong>Use browser session</strong>
-                    <small>Lets yt-dlp read cookies for media you are allowed to access. Cookies stay local.</small>
+                    <small>Firefox is the most reliable choice on Windows. Cookies stay on this device.</small>
                   </span>
                   <Switch
                     checked={cookiesFromBrowser}
@@ -184,21 +202,59 @@ export function SettingsDialog({
                   />
                 </label>
                 {cookiesFromBrowser && (
-                  <label className="field-group compact inset-field">
-                    <span>Browser</span>
-                    <Select
-                      value={cookieBrowser}
-                      onChange={(event) => onCookieBrowserChange(event.currentTarget.value as CookieBrowser)}
-                    >
-                      <option value="edge">Microsoft Edge</option>
-                      <option value="chrome">Google Chrome</option>
-                      <option value="firefox">Mozilla Firefox</option>
-                      <option value="brave">Brave</option>
-                      <option value="vivaldi">Vivaldi</option>
-                      <option value="opera">Opera</option>
-                    </Select>
-                  </label>
+                  <>
+                    <div className="settings-grid two-fields inset-field">
+                      <label className="field-group compact">
+                        <span>Browser</span>
+                        <Select
+                          value={cookieBrowser}
+                          onChange={(event) => onCookieBrowserChange(event.currentTarget.value as CookieBrowser)}
+                        >
+                          <option value="firefox">Mozilla Firefox (recommended)</option>
+                          <option value="edge">Microsoft Edge</option>
+                          <option value="chrome">Google Chrome</option>
+                          <option value="brave">Brave</option>
+                          <option value="vivaldi">Vivaldi</option>
+                          <option value="opera">Opera</option>
+                        </Select>
+                      </label>
+                      <label className="field-group compact">
+                        <span>Profile (optional)</span>
+                        <Input
+                          value={cookieBrowserProfile}
+                          onChange={(event) => onCookieBrowserProfileChange(event.currentTarget.value)}
+                          placeholder="Default profile"
+                          autoComplete="off"
+                        />
+                      </label>
+                    </div>
+                    {cookieBrowser !== "firefox" && (
+                      <p className="warning-copy browser-warning">
+                        <CircleAlert aria-hidden="true" />
+                        Chromium may block cookie access on Windows. Close the browser first, or use Firefox or cookies.txt.
+                      </p>
+                    )}
+                  </>
                 )}
+
+                <div className="cookie-file-row">
+                  <FileText aria-hidden="true" />
+                  <div>
+                    <strong>Netscape cookies.txt</strong>
+                    <small>Use an exported cookie file when direct browser access is blocked.</small>
+                    {cookieFile && <span className="cookie-file-path" title={cookieFile}>{cookieFile}</span>}
+                  </div>
+                  <div className="cookie-file-actions">
+                    <button type="button" className="secondary-button" onClick={onChooseCookieFile}>
+                      Choose file
+                    </button>
+                    {cookieFile && (
+                      <button type="button" className="text-button" onClick={onRemoveCookieFile}>
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
               </section>
 
               <section className="settings-section">
@@ -282,6 +338,7 @@ export function SettingsDialog({
               <div>
                 <h3>Engine integrity</h3>
                 <p>yt-dlp: {toolSummary(tools?.ytDlp)}</p>
+                <p>Deno: {toolSummary(tools?.deno)}</p>
                 <p>FFmpeg: {toolSummary(tools?.ffmpeg)}</p>
               </div>
             </div>

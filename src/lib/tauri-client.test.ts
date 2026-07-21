@@ -14,6 +14,13 @@ describe("browser fallback client", () => {
     const report = await browserFallbackClient.checkTools();
     expect(report.ready).toBe(true);
     expect(report.ytDlp.available).toBe(true);
+    expect(report.deno.available).toBe(true);
+  });
+
+  it("chooses a Netscape cookie file in browser tests", async () => {
+    await expect(browserFallbackClient.chooseCookieFile()).resolves.toBe(
+      "C:\\Users\\Demo\\cookies.txt",
+    );
   });
 
   it("simulates a download through to completion", async () => {

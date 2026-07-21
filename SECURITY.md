@@ -8,14 +8,14 @@ The latest release and the `main` branch receive security fixes.
 
 ## Trust boundaries
 
-rsdownit processes untrusted URLs and launches two external media tools. The important boundaries are:
+rsdownit processes untrusted URLs and launches external media tools. The important boundaries are:
 
 - The React view can call only the Tauri commands and dialog capability declared by the app.
 - User media URLs are accepted only over HTTP or HTTPS. Literal and DNS-resolved private, loopback, link-local and local-domain targets are rejected. Built-in GET requests pin the checked public addresses and recheck every redirect.
 - Direct downloads reject HTML responses and executable or shortcut filename extensions.
-- Managed tools are downloaded over HTTPS from publisher locations and installed only after their published SHA-256 matches.
-- A `PATH` copy of yt-dlp or FFmpeg is trusted as a system-managed tool and is clearly marked as unverified by rsdownit.
-- Browser-cookie access and third-party Cobalt requests require an explicit user setting.
+- Managed yt-dlp, Deno, and FFmpeg tools are downloaded over HTTPS from publisher locations and installed only after their published SHA-256 matches.
+- A `PATH` copy of yt-dlp, Deno, or FFmpeg is trusted as a system-managed tool and is clearly marked as unverified by rsdownit.
+- Browser-cookie access, cookie-file selection, and third-party Cobalt requests require an explicit user setting. Cookie contents are not copied into rsdownit settings.
 - API tokens are held in memory and removed from the persisted settings copy.
 
 The external yt-dlp process resolves hosts itself after rsdownit validates them. A hostile DNS service can still change its answer in that short interval. Do not use rsdownit as a network service or expose its Tauri command channel to untrusted pages.

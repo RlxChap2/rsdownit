@@ -8,7 +8,7 @@ use crate::models::{DownloadRequest, PlannedDownload, PreflightCheck, ProviderAt
 use crate::providers::plan_provider_order;
 use crate::providers::yt_dlp::{build_ytdlp_args, requires_ffmpeg_for_audio};
 use crate::security::{is_safe_download_filename, validate_api_endpoint, validate_remote_url};
-use crate::settings::{default_output_folder, AppSettings};
+use crate::settings::{default_output_folder, validate_cookie_file, AppSettings};
 use crate::storage::validate_output_dir;
 use crate::tools::{self, ToolUpdatesReport, ToolsReport};
 
@@ -51,6 +51,7 @@ pub fn save_app_settings(
     if settings.api_provider.enabled && !settings.api_provider.base_url.trim().is_empty() {
         validate_api_endpoint(&settings.api_provider.base_url)?;
     }
+    validate_cookie_file(&settings.cookie_file)?;
     let mut stored = state
         .settings
         .lock()
@@ -202,6 +203,11 @@ pub fn preflight<R: Runtime>(app: AppHandle<R>) -> Vec<PreflightCheck> {
             &report.yt_dlp,
             "Download engine (yt-dlp)",
             "Will be downloaded automatically on first use.",
+        ),
+        tool_check(
+            &report.deno,
+            "YouTube challenge runtime (Deno)",
+            "Will be downloaded automatically for full YouTube support.",
         ),
         tool_check(
             &report.ffmpeg,

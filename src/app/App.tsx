@@ -93,7 +93,9 @@ function App() {
   const [cookiesFromBrowser, setCookiesFromBrowser] = useState(false);
   const [cookieBrowser, setCookieBrowser] = useState<
     "edge" | "chrome" | "firefox" | "brave" | "vivaldi" | "opera"
-  >("edge");
+  >("firefox");
+  const [cookieBrowserProfile, setCookieBrowserProfile] = useState("");
+  const [cookieFile, setCookieFile] = useState("");
   const [autoStart, setAutoStart] = useState(() => readPref("rsdownit-autostart", false));
   const [showAdvanced, setShowAdvanced] = useState(() => readPref("rsdownit-advanced", false));
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -129,6 +131,7 @@ function App() {
               detail: update.detail ?? job.detail,
               filePath: update.filePath ?? job.filePath,
               error: update.error ?? job.error,
+              errorCode: update.errorCode ?? job.errorCode,
             }
           : job,
       ),
@@ -163,6 +166,8 @@ function App() {
         setConcurrency(settings.concurrency);
         setCookiesFromBrowser(settings.cookiesFromBrowser);
         setCookieBrowser(settings.cookieBrowser);
+        setCookieBrowserProfile(settings.cookieBrowserProfile);
+        setCookieFile(settings.cookieFile);
       }
       if (reportResult.status === "fulfilled") setTools(reportResult.value);
 
@@ -255,6 +260,18 @@ function App() {
     if (selected) setOutputFolder(selected);
   }
 
+  async function chooseCookieFile() {
+    const selected = await client.chooseCookieFile();
+    if (!selected) return;
+    setCookieFile(selected);
+    setCookiesFromBrowser(false);
+  }
+
+  function openAuthenticationSettings() {
+    updatePref("rsdownit-advanced", true, setShowAdvanced);
+    setSettingsOpen(true);
+  }
+
   function retryJob(job: JobItem) {
     setJobs((previous) => previous.filter((item) => item.id !== job.id));
     void startDownload({ url: job.url, mode: job.mode });
@@ -272,6 +289,8 @@ function App() {
         concurrency,
         cookiesFromBrowser,
         cookieBrowser,
+        cookieBrowserProfile,
+        cookieFile,
         ffmpegPath: "",
         apiProvider: { ...apiProvider, enabled: Boolean(apiProvider.baseUrl.trim()) },
         communityFallback,
@@ -391,6 +410,7 @@ function App() {
                 }
                 onOpenFile={(path) => void client.openFile(path)}
                 onShowInFolder={(path) => void client.showInFolder(path)}
+                onOpenSettings={openAuthenticationSettings}
               />
             </div>
           }
@@ -411,6 +431,8 @@ function App() {
         concurrency={concurrency}
         cookiesFromBrowser={cookiesFromBrowser}
         cookieBrowser={cookieBrowser}
+        cookieBrowserProfile={cookieBrowserProfile}
+        cookieFile={cookieFile}
         apiProvider={apiProvider}
         tools={tools}
         checkingTools={checkingTools}
@@ -421,8 +443,14 @@ function App() {
         onShowAdvancedChange={(value) => updatePref("rsdownit-advanced", value, setShowAdvanced)}
         onCommunityFallbackChange={setCommunityFallback}
         onConcurrencyChange={setConcurrency}
-        onCookiesFromBrowserChange={setCookiesFromBrowser}
+        onCookiesFromBrowserChange={(value) => {
+          setCookiesFromBrowser(value);
+          if (value) setCookieFile("");
+        }}
         onCookieBrowserChange={setCookieBrowser}
+        onCookieBrowserProfileChange={setCookieBrowserProfile}
+        onChooseCookieFile={() => void chooseCookieFile()}
+        onRemoveCookieFile={() => setCookieFile("")}
         onApiProviderChange={setApiProvider}
         onSave={() => void saveSettings()}
         onRepairTools={() => void repairTools()}

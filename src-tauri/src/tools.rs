@@ -1,4 +1,4 @@
-//! Finds and provisions yt-dlp and FFmpeg with publisher checksum verification.
+//! Finds and provisions yt-dlp, Deno, and FFmpeg with publisher checksum verification.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -21,6 +21,12 @@ const YTDLP_LINUX_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
 const YTDLP_CHECKSUMS_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS";
+const DENO_WINDOWS_X64_ASSET: &str = "deno-x86_64-pc-windows-msvc.zip";
+const DENO_WINDOWS_ARM64_ASSET: &str = "deno-aarch64-pc-windows-msvc.zip";
+const DENO_MACOS_X64_ASSET: &str = "deno-x86_64-apple-darwin.zip";
+const DENO_MACOS_ARM64_ASSET: &str = "deno-aarch64-apple-darwin.zip";
+const DENO_LINUX_X64_ASSET: &str = "deno-x86_64-unknown-linux-gnu.zip";
+const DENO_LINUX_ARM64_ASSET: &str = "deno-aarch64-unknown-linux-gnu.zip";
 // ffmpeg.org's recommended Windows builds; "essentials" carries everything
 // yt-dlp needs for merging and audio conversion.
 const FFMPEG_WINDOWS_ZIP_URL: &str =
@@ -46,6 +52,7 @@ pub struct ToolStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ToolsReport {
     pub yt_dlp: ToolStatus,
+    pub deno: ToolStatus,
     pub ffmpeg: ToolStatus,
     pub ready: bool,
 }
@@ -63,6 +70,7 @@ pub struct ToolUpdateStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ToolUpdatesReport {
     pub yt_dlp: ToolUpdateStatus,
+    pub deno: ToolUpdateStatus,
     pub ffmpeg: ToolUpdateStatus,
     pub updates_available: bool,
 }
@@ -116,6 +124,32 @@ fn checksum_path(path: &Path) -> PathBuf {
 
 fn ffmpeg_release_checksum_path(tools_dir: &Path) -> PathBuf {
     tools_dir.join("ffmpeg-release.sha256")
+}
+
+fn deno_release_checksum_path(tools_dir: &Path) -> PathBuf {
+    tools_dir.join("deno-release.sha256")
+}
+
+fn deno_release_asset() -> Option<&'static str> {
+    if cfg!(all(windows, target_arch = "x86_64")) {
+        Some(DENO_WINDOWS_X64_ASSET)
+    } else if cfg!(all(windows, target_arch = "aarch64")) {
+        Some(DENO_WINDOWS_ARM64_ASSET)
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Some(DENO_MACOS_X64_ASSET)
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some(DENO_MACOS_ARM64_ASSET)
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some(DENO_LINUX_X64_ASSET)
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some(DENO_LINUX_ARM64_ASSET)
+    } else {
+        None
+    }
+}
+
+fn deno_release_url(asset: &str) -> String {
+    format!("https://github.com/denoland/deno/releases/latest/download/{asset}")
 }
 
 fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
@@ -442,6 +476,110 @@ async fn ensure_yt_dlp(
     Ok(locate_tool_in(Some(tools_dir), "yt-dlp"))
 }
 
+fn extract_deno_from_zip(zip_path: &Path, target_dir: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|error| format!("Could not open Deno archive: {error}"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("Could not read Deno archive: {error}"))?;
+    let expected_name = exe_name("deno");
+    let mut found = false;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Bad Deno archive entry: {error}"))?;
+        let Some(path) = entry.enclosed_name() else {
+            return Err("Deno archive contained an unsafe path.".to_string());
+        };
+        if path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
+            continue;
+        }
+        if entry.size() > 300 * 1024 * 1024 {
+            return Err("Deno executable is unexpectedly large.".to_string());
+        }
+
+        let destination = target_dir.join(&expected_name);
+        let temp = target_dir.join(format!(".{expected_name}.{}.part", Uuid::new_v4()));
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|error| format!("Could not write Deno: {error}"))?;
+        if let Err(error) = std::io::copy(&mut entry, &mut output) {
+            drop(output);
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("Could not extract Deno: {error}"));
+        }
+        drop(output);
+        replace_local_file(&temp, &destination, "Deno")?;
+        write_local_checksum(&destination)?;
+        found = true;
+        break;
+    }
+
+    if !found {
+        return Err("Deno archive did not contain the expected executable.".to_string());
+    }
+    Ok(())
+}
+
+async fn ensure_deno(
+    tools_dir: &Path,
+    sink: SetupSink<'_>,
+    refresh_managed: bool,
+) -> Result<ToolStatus, String> {
+    let existing = locate_tool_in(Some(tools_dir), "deno");
+    if existing.available && (!refresh_managed || !existing.managed) {
+        return Ok(existing);
+    }
+
+    let Some(asset) = deno_release_asset() else {
+        return Ok(existing);
+    };
+    let url = deno_release_url(asset);
+    let checksum_url = format!("{url}.sha256sum");
+    report(
+        sink,
+        "Deno",
+        "verifying",
+        0,
+        None,
+        "Fetching publisher checksum",
+    );
+    let checksum_text = fetch_text(&checksum_url, "Deno checksum").await?;
+    let expected = checksum_text
+        .split_whitespace()
+        .find(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .ok_or_else(|| "Deno publisher checksum was invalid.".to_string())?;
+
+    let zip_path = tools_dir.join("deno-download.zip");
+    download_file(sink, "Deno", &url, &zip_path, expected).await?;
+    report(sink, "Deno", "extracting", 0, None, "Unpacking Deno");
+    let dir_clone = tools_dir.to_path_buf();
+    let zip_clone = zip_path.clone();
+    tokio::task::spawn_blocking(move || extract_deno_from_zip(&zip_clone, &dir_clone))
+        .await
+        .map_err(|error| format!("Deno extraction crashed: {error}"))??;
+    let _ = tokio::fs::remove_file(&zip_path).await;
+    let _ = tokio::fs::remove_file(checksum_path(&zip_path)).await;
+    tokio::fs::write(
+        deno_release_checksum_path(tools_dir),
+        format!("{}\n", expected.to_ascii_lowercase()),
+    )
+    .await
+    .map_err(|error| format!("Could not store Deno release checksum: {error}"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let destination = tools_dir.join(exe_name("deno"));
+        let _ = std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o755));
+    }
+
+    report(sink, "Deno", "ready", 0, None, "Deno is ready");
+    Ok(locate_tool_in(Some(tools_dir), "deno"))
+}
+
 fn extract_ffmpeg_from_zip(zip_path: &Path, target_dir: &Path) -> Result<(), String> {
     let file = std::fs::File::open(zip_path)
         .map_err(|error| format!("Could not open FFmpeg archive: {error}"))?;
@@ -581,6 +719,12 @@ pub async fn ensure_tools_in(tools_dir: &Path, sink: SetupSink<'_>) -> Result<To
     std::fs::create_dir_all(tools_dir)
         .map_err(|error| format!("Could not create tools dir: {error}"))?;
     let yt_dlp = ensure_yt_dlp(tools_dir, sink, false).await?;
+    let deno = ensure_deno(tools_dir, sink, false)
+        .await
+        .unwrap_or_else(|error| {
+            report(sink, "Deno", "error", 0, None, &error);
+            locate_tool_in(Some(tools_dir), "deno")
+        });
     let ffmpeg = ensure_ffmpeg(tools_dir, sink, false)
         .await
         .unwrap_or_else(|error| {
@@ -588,9 +732,10 @@ pub async fn ensure_tools_in(tools_dir: &Path, sink: SetupSink<'_>) -> Result<To
             report(sink, "ffmpeg", "error", 0, None, &error);
             locate_tool_in(Some(tools_dir), "ffmpeg")
         });
-    let ready = yt_dlp.available;
+    let ready = yt_dlp.available && deno.available;
     Ok(ToolsReport {
         yt_dlp,
+        deno,
         ffmpeg,
         ready,
     })
@@ -603,6 +748,12 @@ pub async fn refresh_tools_in(
     std::fs::create_dir_all(tools_dir)
         .map_err(|error| format!("Could not create tools dir: {error}"))?;
     let yt_dlp = ensure_yt_dlp(tools_dir, sink, true).await?;
+    let deno = ensure_deno(tools_dir, sink, true)
+        .await
+        .unwrap_or_else(|error| {
+            report(sink, "Deno", "error", 0, None, &error);
+            locate_tool_in(Some(tools_dir), "deno")
+        });
     let ffmpeg = ensure_ffmpeg(tools_dir, sink, true)
         .await
         .unwrap_or_else(|error| {
@@ -610,14 +761,16 @@ pub async fn refresh_tools_in(
             locate_tool_in(Some(tools_dir), "ffmpeg")
         });
     Ok(ToolsReport {
-        ready: yt_dlp.available,
+        ready: yt_dlp.available && deno.available,
         yt_dlp,
+        deno,
         ffmpeg,
     })
 }
 
 pub async fn check_tool_updates_in(tools_dir: &Path) -> Result<ToolUpdatesReport, String> {
     let yt_dlp = locate_tool_in(Some(tools_dir), "yt-dlp");
+    let deno = locate_tool_in(Some(tools_dir), "deno");
     let ffmpeg = locate_tool_in(Some(tools_dir), "ffmpeg");
 
     let yt_update = if yt_dlp.managed && yt_dlp.available {
@@ -637,6 +790,23 @@ pub async fn check_tool_updates_in(tools_dir: &Path) -> Result<ToolUpdatesReport
         None
     };
 
+    let deno_update = if deno.managed && deno.available {
+        let asset = deno_release_asset()
+            .ok_or_else(|| "Deno does not publish an asset for this platform.".to_string())?;
+        let checksum_url = format!("{}.sha256sum", deno_release_url(asset));
+        let latest = fetch_text(&checksum_url, "Deno checksum").await?;
+        let latest = latest
+            .split_whitespace()
+            .find(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+            .ok_or_else(|| "Deno publisher checksum was invalid.".to_string())?;
+        std::fs::read_to_string(deno_release_checksum_path(tools_dir))
+            .ok()
+            .and_then(|value| value.split_whitespace().next().map(str::to_owned))
+            .map(|current| !current.eq_ignore_ascii_case(latest))
+    } else {
+        None
+    };
+
     let ffmpeg_update = if cfg!(windows) && ffmpeg.managed && ffmpeg.available {
         let latest = fetch_text(FFMPEG_WINDOWS_SHA256_URL, "FFmpeg checksum").await?;
         let latest = latest
@@ -652,12 +822,20 @@ pub async fn check_tool_updates_in(tools_dir: &Path) -> Result<ToolUpdatesReport
     };
 
     Ok(ToolUpdatesReport {
-        updates_available: yt_update == Some(true) || ffmpeg_update == Some(true),
+        updates_available: yt_update == Some(true)
+            || deno_update == Some(true)
+            || ffmpeg_update == Some(true),
         yt_dlp: ToolUpdateStatus {
             name: "yt-dlp".to_string(),
             managed: yt_dlp.managed,
             update_available: yt_update,
             current_version: yt_dlp.version,
+        },
+        deno: ToolUpdateStatus {
+            name: "Deno".to_string(),
+            managed: deno.managed,
+            update_available: deno_update,
+            current_version: deno.version,
         },
         ffmpeg: ToolUpdateStatus {
             name: "FFmpeg".to_string(),
@@ -689,10 +867,12 @@ pub fn locate_tool<R: Runtime>(app: &AppHandle<R>, base_name: &str) -> ToolStatu
 
 pub fn tools_report<R: Runtime>(app: &AppHandle<R>) -> ToolsReport {
     let yt_dlp = locate_tool(app, "yt-dlp");
+    let deno = locate_tool(app, "deno");
     let ffmpeg = locate_tool(app, "ffmpeg");
-    let ready = yt_dlp.available;
+    let ready = yt_dlp.available && deno.available;
     ToolsReport {
         yt_dlp,
+        deno,
         ffmpeg,
         ready,
     }

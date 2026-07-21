@@ -15,7 +15,7 @@ type UpdateDialogProps = {
 
 function toolStatus(report: ToolUpdatesReport | null) {
   if (!report) return "Tool versions could not be checked.";
-  const updates = [report.ytDlp, report.ffmpeg]
+  const updates = [report.ytDlp, report.deno, report.ffmpeg]
     .filter((tool) => tool.updateAvailable)
     .map((tool) => tool.name);
   if (updates.length === 0) return "Download tools are current.";

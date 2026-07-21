@@ -159,6 +159,22 @@ jobs:
           }
           $lines | Set-Content -Path (Join-Path $artifactDir 'SHA256SUMS.txt') -Encoding ascii
 
+      - name: Verify Windows publisher signatures
+        shell: pwsh
+        run: |
+          $releaseFiles = Get-ChildItem artifacts -File | Where-Object { $_.Extension -in '.exe', '.msi' }
+          if ($env:WINDOWS_CERTIFICATE) {
+            foreach ($file in $releaseFiles) {
+              $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+              if ($signature.Status -ne 'Valid') {
+                throw "Authenticode verification failed for $($file.Name): $($signature.Status)"
+              }
+            }
+            "### Windows publisher signature`nAll EXE and MSI files have a valid Authenticode signature." >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "### Windows publisher signature`nThis build is unsigned. Configure WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD for public releases." >> $env:GITHUB_STEP_SUMMARY
+          }
+
       - name: Create updater manifest
         if: startsWith(github.ref, 'refs/tags/v') && env.TAURI_SIGNING_PRIVATE_KEY != ''
         shell: pwsh

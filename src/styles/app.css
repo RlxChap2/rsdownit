@@ -804,6 +804,14 @@ select {
   gap: var(--space-1);
 }
 
+.job-settings-button {
+  white-space: nowrap;
+}
+
+.job-settings-button svg {
+  width: 16px;
+}
+
 .app-footer {
   display: flex;
   justify-content: space-between;
@@ -994,6 +1002,59 @@ dialog::backdrop {
 
 .inset-field {
   margin-top: var(--space-3);
+}
+
+.auth-heading {
+  margin-bottom: var(--space-1);
+}
+
+.cookie-file-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+}
+
+.cookie-file-row > svg {
+  width: 20px;
+  color: var(--color-ink-muted);
+}
+
+.cookie-file-row strong,
+.cookie-file-row small,
+.cookie-file-path {
+  display: block;
+}
+
+.cookie-file-row small {
+  margin-top: 2px;
+  color: var(--color-ink-muted);
+}
+
+.cookie-file-path {
+  overflow: hidden;
+  margin-top: var(--space-2);
+  color: var(--color-ink);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cookie-file-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.browser-warning {
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
 }
 
 .two-fields {
@@ -1343,6 +1404,15 @@ dialog::backdrop {
 
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .cookie-file-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .cookie-file-actions {
+    grid-column: 2;
+    justify-content: flex-start;
   }
 
   .setting-note {

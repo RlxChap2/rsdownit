@@ -8,6 +8,10 @@ rsdownit can locate a system installation or download an official standalone rel
 
 yt-dlp source code is generally Unlicense, but official standalone executables combine dependencies and are distributed under GPL-3.0-or-later. Refer to the release and repository notices for the exact binary. rsdownit verifies the release SHA-256 but does not change its license.
 
+## Deno
+
+rsdownit can locate a system installation or download an official archive from <https://github.com/denoland/deno/releases>. Deno is licensed under the MIT License. Its runtime lets yt-dlp solve JavaScript challenges required by current YouTube extractors.
+
 ## FFmpeg
 
 On Windows, rsdownit can download the FFmpeg essentials archive published at <https://www.gyan.dev/ffmpeg/builds/>. FFmpeg and the build's enabled libraries determine whether LGPL or GPL terms apply. License and corresponding-source links are published with the build.

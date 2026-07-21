@@ -1,6 +1,6 @@
 [package]
 name = "rsdownit"
-version = "0.1.0"
+version = "0.1.1"
 description = "Open-source desktop downloader for video and audio"
 authors = ["RlxChap2"]
 license = "MIT"

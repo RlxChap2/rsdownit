@@ -242,6 +242,12 @@ fn builds_ytdlp_audio_arguments_with_conversion_when_requested() {
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--concurrent-fragments", "4"]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--extractor-retries", "3"]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--file-access-retries", "3"]));
 }
 
 #[test]

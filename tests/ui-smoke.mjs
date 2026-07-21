@@ -14,6 +14,11 @@ let failed = false;
 try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1180, height: 800 } });
+  const browserErrors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
   await page.goto(url);
   await page.waitForLoadState("networkidle");
 
@@ -47,6 +52,12 @@ try {
   await page.getByRole("button", { name: "Done" }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("switch", { name: "Show advanced options" }).click();
+  await expectVisible(page.getByText("Site sign-in"), "site sign-in settings");
+  await page.getByRole("switch", { name: "Use browser session" }).click();
+  const selectedBrowser = await page.locator(".inset-field select").first().inputValue();
+  if (selectedBrowser !== "firefox") throw new Error("Firefox is not the default sign-in browser");
+  await page.getByRole("button", { name: "Choose file" }).click();
+  await expectVisible(page.getByText("C:\\Users\\Demo\\cookies.txt"), "cookie file selection");
   await expectVisible(page.getByText("Self-hosted Cobalt API"), "self-hosted fallback");
   await expectVisible(page.getByRole("switch", { name: "Community fallback servers" }), "community fallback");
   await page.getByRole("button", { name: "Close settings" }).click();
@@ -73,6 +84,18 @@ try {
     if (width <= 1024 && layout.queueTop < layout.controlsBottom) {
       throw new Error(`queue overlaps controls at ${width}px`);
     }
+  }
+
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const dialogBounds = await page.getByRole("dialog", { name: "Settings" }).locator(".dialog-panel").boundingBox();
+  if (!dialogBounds || dialogBounds.x < 0 || dialogBounds.x + dialogBounds.width > 820) {
+    throw new Error("settings dialog does not fit the iPad viewport");
+  }
+  await page.getByRole("button", { name: "Close settings" }).click();
+
+  if (browserErrors.length) {
+    throw new Error(`browser console errors: ${browserErrors.join(" | ")}`);
   }
 
   const updatePage = await browser.newPage({ viewport: { width: 390, height: 844 } });

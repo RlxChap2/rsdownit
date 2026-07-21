@@ -15,7 +15,8 @@ Windows 10 and 11 are the current release targets. The Tauri and Rust foundation
 - Native audio, MP3, M4A, Opus, and WAV output, with optional bitrate selection.
 - Download progress, speed, ETA, cancellation, retry, and local history.
 - A native output-folder picker. Existing files are never overwritten.
-- Optional browser cookies for media the user is authorized to access.
+- Optional Firefox/browser profiles and Netscape `cookies.txt` files for media the user is authorized to access.
+- A browser-compatible retry for sites that reject the first media request.
 - Optional self-hosted Cobalt fallback. Community instances remain disabled by default.
 - Light and dark themes with responsive desktop and tablet layouts.
 - No telemetry.
@@ -37,13 +38,24 @@ rsdownit tries each allowed method in this order:
 | 4 | Community Cobalt | Optional third-party fallback that requires explicit consent |
 | 5 | HTML probe | Searches public page metadata and media elements for a direct source |
 
-Managed yt-dlp and Windows FFmpeg binaries are downloaded from publisher URLs and checked against published SHA-256 values before installation. A system copy on `PATH` can also be used, but the app identifies it as system-provided rather than publisher-verified.
+Managed yt-dlp, Deno, and Windows FFmpeg downloads come from publisher URLs and are checked against publisher SHA-256 values before installation. Deno runs the JavaScript challenges now required for full YouTube support. A system copy on `PATH` can also be used, but the app identifies it as system-provided rather than publisher-verified.
+
+## Links that require sign-in
+
+Reddit, Instagram, X, YouTube, and other sites may require the same signed-in session used in a browser. Open **Settings → Show advanced options → Site sign-in**, then choose one of these methods:
+
+1. Use a Firefox session. Select the profile when more than one profile exists.
+2. Select a fresh Netscape-format `cookies.txt` file exported from a browser session.
+
+Firefox is the most reliable direct-browser option on Windows. Chromium browsers can lock their cookie database while running, and newer Chrome builds can prevent third-party decryption through Windows DPAPI. rsdownit does not terminate browsers or weaken those protections. Close every Chromium window before retrying, or use Firefox or `cookies.txt` instead.
+
+An HTTP 403 response means the site rejected the media request. rsdownit retries yt-dlp once with browser-compatible networking. If that also fails, refresh the signed-in session, export new cookies, or try later. Private posts still require permission, and some YouTube formats can require a site-issued PO token that rsdownit cannot create on the user's behalf.
 
 ## Privacy and security
 
 - Downloads stay local unless an API fallback is enabled.
 - API tokens remain in memory and are not written to `settings.json`.
-- Browser-cookie access is opt-in and is passed only to the local yt-dlp process.
+- Browser-cookie access is opt-in and is passed only to the local yt-dlp process. A selected cookie file takes precedence over direct browser access.
 - Media URLs containing embedded credentials, local hostnames, or private IP ranges are rejected.
 - Direct downloads reject executable and shortcut filename extensions.
 - The Tauri window uses a restrictive Content Security Policy and a small capability set.
@@ -73,7 +85,7 @@ GitHub build provenance can be checked with the GitHub CLI:
 gh attestation verify .\rsdownit.exe --repo RlxChap2/rsdownit
 ```
 
-A checksum confirms file identity, while the attestation links the file to this repository's GitHub Actions workflow. Production releases should also use an Authenticode certificate so Windows can verify the publisher.
+A checksum confirms file identity, while the attestation links the file to this repository's GitHub Actions workflow. Windows publisher reputation is separate: releases need a publicly trusted Authenticode certificate, or Microsoft Store signing for an MSIX package, to identify the publisher to SmartScreen. A self-signed certificate does not provide that reputation.
 
 ## Build from source
 

@@ -44,6 +44,7 @@ export type JobItem = {
   detail?: string;
   filePath?: string;
   error?: string;
+  errorCode?: string;
 };
 
 export type JobUpdate = {
@@ -57,6 +58,7 @@ export type JobUpdate = {
   detail?: string;
   filePath?: string;
   error?: string;
+  errorCode?: string;
 };
 
 export type SetupProgress = {
@@ -79,6 +81,7 @@ export type ToolStatus = {
 
 export type ToolsReport = {
   ytDlp: ToolStatus;
+  deno: ToolStatus;
   ffmpeg: ToolStatus;
   ready: boolean;
 };
@@ -92,6 +95,7 @@ export type ToolUpdateStatus = {
 
 export type ToolUpdatesReport = {
   ytDlp: ToolUpdateStatus;
+  deno: ToolUpdateStatus;
   ffmpeg: ToolUpdateStatus;
   updatesAvailable: boolean;
 };
@@ -116,6 +120,8 @@ export type AppSettings = {
   concurrency: number;
   cookiesFromBrowser: boolean;
   cookieBrowser: "edge" | "chrome" | "firefox" | "brave" | "vivaldi" | "opera";
+  cookieBrowserProfile: string;
+  cookieFile: string;
   ffmpegPath: string;
   apiProvider: ApiProviderSettings;
   communityFallback: boolean;

@@ -23,6 +23,7 @@ export type StartRequest = {
 export type TauriClient = {
   isDesktop: boolean;
   chooseOutputFolder: () => Promise<string | null>;
+  chooseCookieFile: () => Promise<string | null>;
   getDefaultOutputDir: () => Promise<string>;
   getSettings: () => Promise<AppSettings>;
   saveSettings: (settings: AppSettings) => Promise<AppSettings>;
@@ -48,7 +49,9 @@ const fallbackSettings: AppSettings = {
   outputFolder: "",
   concurrency: 2,
   cookiesFromBrowser: false,
-  cookieBrowser: "edge",
+  cookieBrowser: "firefox",
+  cookieBrowserProfile: "",
+  cookieFile: "",
   ffmpegPath: "",
   apiProvider: {
     enabled: false,
@@ -70,6 +73,15 @@ const fallbackTools: ToolsReport = {
     verified: true,
     sha256: "browser-demo",
   },
+  deno: {
+    name: "Deno",
+    available: true,
+    path: "deno",
+    managed: true,
+    version: "browser demo",
+    verified: true,
+    sha256: "browser-demo",
+  },
   ffmpeg: {
     name: "ffmpeg",
     available: true,
@@ -85,6 +97,12 @@ const fallbackTools: ToolsReport = {
 const fallbackToolUpdates: ToolUpdatesReport = {
   ytDlp: {
     name: "yt-dlp",
+    managed: true,
+    updateAvailable: false,
+    currentVersion: "browser demo",
+  },
+  deno: {
+    name: "Deno",
     managed: true,
     updateAvailable: false,
     currentVersion: "browser demo",
@@ -116,6 +134,9 @@ function createBrowserClient(): TauriClient {
     isDesktop: false,
     async chooseOutputFolder() {
       return FALLBACK_PICKED_FOLDER;
+    },
+    async chooseCookieFile() {
+      return "C:\\Users\\Demo\\cookies.txt";
     },
     async getDefaultOutputDir() {
       return stored.outputFolder || FALLBACK_FOLDER;
@@ -229,6 +250,14 @@ export async function createTauriClient(): Promise<TauriClient> {
     isDesktop: true,
     async chooseOutputFolder() {
       const selected = await open({ directory: true, multiple: false });
+      return typeof selected === "string" ? selected : null;
+    },
+    async chooseCookieFile() {
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        filters: [{ name: "Netscape cookie file", extensions: ["txt"] }],
+      });
       return typeof selected === "string" ? selected : null;
     },
     getDefaultOutputDir() {

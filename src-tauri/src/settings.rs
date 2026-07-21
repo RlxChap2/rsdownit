@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io::BufRead;
 
 use crate::models::{AudioFormat, DownloadMode, ProviderKind};
 
@@ -37,6 +38,8 @@ pub struct AppSettings {
     pub concurrency: u8,
     pub cookies_from_browser: bool,
     pub cookie_browser: String,
+    pub cookie_browser_profile: String,
+    pub cookie_file: String,
     pub ffmpeg_path: String,
     pub api_provider: ApiProviderSettings,
     /// Third-party community Cobalt servers. Disabled unless the user opts in.
@@ -88,7 +91,9 @@ impl Default for AppSettings {
             ],
             concurrency: 2,
             cookies_from_browser: false,
-            cookie_browser: "edge".to_string(),
+            cookie_browser: "firefox".to_string(),
+            cookie_browser_profile: String::new(),
+            cookie_file: String::new(),
             ffmpeg_path: String::new(),
             api_provider: ApiProviderSettings::default(),
             community_fallback: false,
@@ -103,8 +108,10 @@ impl AppSettings {
             self.cookie_browser.as_str(),
             "edge" | "chrome" | "firefox" | "brave" | "vivaldi" | "opera"
         ) {
-            self.cookie_browser = "edge".to_string();
+            self.cookie_browser = "firefox".to_string();
         }
+        self.cookie_browser_profile = self.cookie_browser_profile.trim().to_string();
+        self.cookie_file = self.cookie_file.trim().to_string();
         self.api_provider.timeout_seconds = self.api_provider.timeout_seconds.clamp(5, 120);
         if !matches!(
             self.api_provider.auth_type.as_str(),
@@ -122,6 +129,59 @@ impl AppSettings {
             self.api_provider.enabled = false;
         }
     }
+
+    pub fn cookie_source(&self) -> Option<CookieSource> {
+        if !self.cookie_file.is_empty() {
+            return Some(CookieSource::File(self.cookie_file.clone()));
+        }
+        if !self.cookies_from_browser {
+            return None;
+        }
+
+        let mut browser = self.cookie_browser.clone();
+        if !self.cookie_browser_profile.is_empty() {
+            browser.push(':');
+            browser.push_str(&self.cookie_browser_profile);
+        }
+        Some(CookieSource::Browser(browser))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CookieSource {
+    Browser(String),
+    File(String),
+}
+
+pub fn validate_cookie_file(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Ok(());
+    }
+
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("Could not open the selected cookies file: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the selected cookies file: {error}"))?;
+    if !metadata.is_file() {
+        return Err("The selected cookies path is not a file.".to_string());
+    }
+    if metadata.len() > 10 * 1024 * 1024 {
+        return Err("The selected cookies file is unexpectedly large.".to_string());
+    }
+
+    let mut first_line = String::new();
+    std::io::BufReader::new(file)
+        .read_line(&mut first_line)
+        .map_err(|error| format!("Could not read the selected cookies file: {error}"))?;
+    let header = first_line.trim_start_matches('\u{feff}').trim();
+    if header != "# Netscape HTTP Cookie File" && header != "# HTTP Cookie File" {
+        return Err(
+            "Choose a Netscape cookies.txt file. Its first line must identify it as an HTTP cookie file."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -142,9 +202,46 @@ mod tests {
         };
         settings.normalize();
         assert_eq!(settings.concurrency, 8);
-        assert_eq!(settings.cookie_browser, "edge");
+        assert_eq!(settings.cookie_browser, "firefox");
         assert_eq!(settings.api_provider.auth_type, "none");
         assert_eq!(settings.api_provider.timeout_seconds, 120);
+    }
+
+    #[test]
+    fn resolves_cookie_file_before_browser_session() {
+        let settings = AppSettings {
+            cookies_from_browser: true,
+            cookie_browser: "firefox".to_string(),
+            cookie_browser_profile: "work".to_string(),
+            cookie_file: "C:/cookies.txt".to_string(),
+            ..AppSettings::default()
+        };
+        assert_eq!(
+            settings.cookie_source(),
+            Some(CookieSource::File("C:/cookies.txt".to_string()))
+        );
+
+        let browser_settings = AppSettings {
+            cookie_file: String::new(),
+            ..settings
+        };
+        assert_eq!(
+            browser_settings.cookie_source(),
+            Some(CookieSource::Browser("firefox:work".to_string()))
+        );
+    }
+
+    #[test]
+    fn validates_netscape_cookie_files() {
+        let path =
+            std::env::temp_dir().join(format!("rsdownit-cookies-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\ta\tb\n",
+        )
+        .expect("write test cookie file");
+        assert!(validate_cookie_file(&path.to_string_lossy()).is_ok());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

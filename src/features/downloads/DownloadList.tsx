@@ -3,6 +3,7 @@ import {
   CircleAlert,
   Clock3,
   FolderOpen,
+  KeyRound,
   ListVideo,
   Music,
   Play,
@@ -23,7 +24,15 @@ type JobListProps = {
   onClearFinished: () => void;
   onOpenFile: (path: string) => void;
   onShowInFolder: (path: string) => void;
+  onOpenSettings: () => void;
 };
+
+const AUTH_ERROR_CODES = new Set([
+  "authentication-required",
+  "browser-cookies-locked",
+  "cookie-decryption-failed",
+  "forbidden",
+]);
 
 const STATUS_LABELS: Record<JobStatus, string> = {
   queued: "Queued",
@@ -48,6 +57,7 @@ export function DownloadList({
   onClearFinished,
   onOpenFile,
   onShowInFolder,
+  onOpenSettings,
 }: JobListProps) {
   const finishedCount = jobs.filter((job) =>
     ["complete", "failed", "cancelled"].includes(job.status),
@@ -128,6 +138,16 @@ export function DownloadList({
                 </div>
 
                 <div className="job-actions">
+                  {job.status === "failed" && job.errorCode && AUTH_ERROR_CODES.has(job.errorCode) && (
+                    <button
+                      type="button"
+                      className="text-button job-settings-button"
+                      onClick={onOpenSettings}
+                    >
+                      <KeyRound aria-hidden="true" />
+                      Sign-in settings
+                    </button>
+                  )}
                   {job.status === "complete" && job.filePath && (
                     <>
                       <button

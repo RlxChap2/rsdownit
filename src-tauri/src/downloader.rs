@@ -27,7 +27,7 @@ use crate::security::{
     is_safe_download_filename, secure_get, secure_redirect_policy, validate_api_endpoint,
     validate_remote_target, validate_remote_url,
 };
-use crate::settings::{ApiProviderSettings, AppSettings};
+use crate::settings::{ApiProviderSettings, AppSettings, CookieSource};
 use crate::storage::{next_available_path, sanitize_filename};
 use crate::tools;
 
@@ -57,6 +57,8 @@ pub struct JobUpdate {
     pub file_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 impl JobUpdate {
@@ -72,6 +74,7 @@ impl JobUpdate {
             detail: None,
             file_path: None,
             error: None,
+            error_code: None,
         }
     }
 }
@@ -82,6 +85,8 @@ pub type JobSink<'a> = &'a (dyn Fn(JobUpdate) + Send + Sync);
 /// Resolved external tool locations for one job run.
 pub struct EngineTools {
     pub yt_dlp_path: Option<String>,
+    /// Deno is required by current yt-dlp releases for full YouTube support.
+    pub deno_path: Option<String>,
     /// Directory containing a managed ffmpeg.exe, when the system has none.
     pub ffmpeg_dir: Option<String>,
 }
@@ -388,13 +393,18 @@ async fn terminate_process_tree(child: &mut tokio::process::Child) {
 }
 
 /// Runs yt-dlp as a child process and translates its output into job events.
-pub async fn ytdlp_download(
+struct YtDlpAttemptOptions<'a> {
+    cookie_source: Option<&'a CookieSource>,
+    impersonate: bool,
+}
+
+async fn ytdlp_download_attempt(
     sink: JobSink<'_>,
     id: &str,
     request: &DownloadRequest,
     engine_tools: &EngineTools,
     concurrent_fragments: u8,
-    cookie_browser: Option<&str>,
+    options: YtDlpAttemptOptions<'_>,
     cancel: &AtomicBool,
 ) -> Result<PathBuf, String> {
     let Some(tool_path) = engine_tools.yt_dlp_path.as_ref() else {
@@ -415,10 +425,28 @@ pub async fn ytdlp_download(
         concurrent_fragments,
     );
 
-    if let Some(browser) = cookie_browser {
+    if let Some(deno_path) = engine_tools.deno_path.as_ref() {
         let insert_at = args.len().saturating_sub(1);
-        args.insert(insert_at, "--cookies-from-browser".to_string());
-        args.insert(insert_at + 1, browser.to_string());
+        args.insert(insert_at, "--js-runtimes".to_string());
+        args.insert(insert_at + 1, format!("deno:{deno_path}"));
+    }
+
+    if let Some(source) = options.cookie_source {
+        let insert_at = args.len().saturating_sub(1);
+        match source {
+            CookieSource::Browser(browser) => {
+                args.insert(insert_at, "--cookies-from-browser".to_string());
+                args.insert(insert_at + 1, browser.clone());
+            }
+            CookieSource::File(path) => {
+                args.insert(insert_at, "--cookies".to_string());
+                args.insert(insert_at + 1, path.clone());
+            }
+        }
+    }
+
+    if options.impersonate {
+        args.insert(0, "--impersonate".to_string());
     }
 
     // Surface the media title and final file path over stdout markers.
@@ -548,6 +576,115 @@ pub async fn ytdlp_download(
         return Err("yt-dlp returned an unsafe executable filename.".to_string());
     }
     Ok(final_path)
+}
+
+/// Runs yt-dlp and retries a rejected media request once with browser request
+/// impersonation. Impersonation is deliberately not forced for normal traffic
+/// because yt-dlp warns that it can reduce speed and stability.
+pub async fn ytdlp_download(
+    sink: JobSink<'_>,
+    id: &str,
+    request: &DownloadRequest,
+    engine_tools: &EngineTools,
+    concurrent_fragments: u8,
+    cookie_source: Option<&CookieSource>,
+    cancel: &AtomicBool,
+) -> Result<PathBuf, String> {
+    match ytdlp_download_attempt(
+        sink,
+        id,
+        request,
+        engine_tools,
+        concurrent_fragments,
+        YtDlpAttemptOptions {
+            cookie_source,
+            impersonate: false,
+        },
+        cancel,
+    )
+    .await
+    {
+        Err(error) if is_forbidden_error(&error) => {
+            let mut update = JobUpdate::new(id, "probing");
+            update.provider = Some(ProviderKind::YtDlp);
+            update.detail = Some("Retrying with browser-compatible networking".to_string());
+            sink(update);
+            match ytdlp_download_attempt(
+                sink,
+                id,
+                request,
+                engine_tools,
+                concurrent_fragments,
+                YtDlpAttemptOptions {
+                    cookie_source,
+                    impersonate: true,
+                },
+                cancel,
+            )
+            .await
+            {
+                Ok(path) => Ok(path),
+                Err(retry_error) => {
+                    Err(format!("{error}\nBrowser-compatible retry: {retry_error}"))
+                }
+            }
+        }
+        result => result,
+    }
+}
+
+fn is_forbidden_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("http error 403") || lower.contains("403: forbidden")
+}
+
+fn friendly_failure(failures: &[String], settings: &AppSettings) -> (String, Option<String>) {
+    let combined = failures.join(" | ");
+    let lower = combined.to_ascii_lowercase();
+
+    if lower.contains("could not copy") && lower.contains("cookie database") {
+        return (
+            "Chrome has locked its cookie database. Close every Chrome window and background process, or use Firefox or a Netscape cookies.txt file in Settings."
+                .to_string(),
+            Some("browser-cookies-locked".to_string()),
+        );
+    }
+    if lower.contains("failed to decrypt with dpapi") {
+        return (
+            "Windows could not decrypt this Chromium browser session. Use Firefox or select a Netscape cookies.txt file in Settings."
+                .to_string(),
+            Some("cookie-decryption-failed".to_string()),
+        );
+    }
+    if lower.contains("account authentication is required")
+        || lower.contains("login required")
+        || lower.contains("empty media response")
+    {
+        let message = match settings.cookie_source() {
+            Some(CookieSource::File(_)) => {
+                "The site rejected the selected cookie file. Export a fresh Netscape cookies.txt file from a signed-in session, then retry."
+            }
+            Some(CookieSource::Browser(_)) => {
+                "The site rejected the selected browser session. Sign in again; on Windows, Firefox is the most reliable option."
+            }
+            None => {
+                "This link requires sign-in. Open Settings, then use a Firefox session or select a Netscape cookies.txt file and retry."
+            }
+        };
+        return (
+            message.to_string(),
+            Some("authentication-required".to_string()),
+        );
+    }
+    if is_forbidden_error(&combined) {
+        return (
+            "The site refused the media request after an automatic browser-compatible retry. Refresh the site session in Settings or try again later."
+                .to_string(),
+            Some("forbidden".to_string()),
+        );
+    }
+
+    (combined, None)
 }
 
 /// Calls one Cobalt-compatible endpoint and streams the file it resolves.
@@ -777,16 +914,14 @@ async fn html_probe_download(
     if is_stream_manifest_url(media_url) {
         let mut manifest_request = request.clone();
         manifest_request.url = media_url.clone();
-        let cookie_browser = settings
-            .cookies_from_browser
-            .then_some(settings.cookie_browser.as_str());
+        let cookie_source = settings.cookie_source();
         ytdlp_download(
             sink,
             id,
             &manifest_request,
             engine_tools,
             settings.concurrency,
-            cookie_browser,
+            cookie_source.as_ref(),
             cancel,
         )
         .await
@@ -881,16 +1016,14 @@ pub async fn run_chain(
             }
             ProviderKind::PublicApi => public_api_download(sink, id, request, cancel).await,
             ProviderKind::YtDlp => {
-                let cookie_browser = settings
-                    .cookies_from_browser
-                    .then_some(settings.cookie_browser.as_str());
+                let cookie_source = settings.cookie_source();
                 ytdlp_download(
                     sink,
                     id,
                     request,
                     engine_tools,
                     settings.concurrency,
-                    cookie_browser,
+                    cookie_source.as_ref(),
                     cancel,
                 )
                 .await
@@ -926,7 +1059,9 @@ pub async fn run_chain(
     }
 
     let mut update = JobUpdate::new(id, "failed");
-    update.error = Some(failures.join(" • "));
+    let (message, error_code) = friendly_failure(&failures, settings);
+    update.error = Some(message);
+    update.error_code = error_code;
     sink(update);
 }
 
@@ -972,9 +1107,11 @@ pub async fn run_job<R: Runtime>(
     }
 
     let yt_dlp = tools::locate_tool(&app, "yt-dlp");
+    let deno = tools::locate_tool(&app, "deno");
     let ffmpeg = tools::locate_tool(&app, "ffmpeg");
     let engine_tools = EngineTools {
         yt_dlp_path: yt_dlp.path,
+        deno_path: deno.managed.then_some(deno.path).flatten(),
         ffmpeg_dir: match (ffmpeg.managed, ffmpeg.path) {
             (true, Some(path)) => Path::new(&path)
                 .parent()
@@ -1014,6 +1151,37 @@ mod tests {
         assert_eq!(format_bytes_per_sec(2_097_152.0), "2.0 MB/s");
         assert_eq!(format_eta(75.0), "1m 15s");
         assert_eq!(format_eta(f64::NAN), "--");
+    }
+
+    #[test]
+    fn classifies_browser_cookie_failures() {
+        let settings = AppSettings::default();
+        let (_, locked_code) = friendly_failure(
+            &["YtDlp: ERROR: Could not copy Chrome cookie database".to_string()],
+            &settings,
+        );
+        assert_eq!(locked_code.as_deref(), Some("browser-cookies-locked"));
+
+        let (_, decryption_code) = friendly_failure(
+            &["YtDlp: ERROR: Failed to decrypt with DPAPI".to_string()],
+            &settings,
+        );
+        assert_eq!(decryption_code.as_deref(), Some("cookie-decryption-failed"));
+    }
+
+    #[test]
+    fn classifies_authentication_and_forbidden_failures() {
+        let settings = AppSettings::default();
+        let (message, auth_code) = friendly_failure(
+            &["YtDlp: Account authentication is required".to_string()],
+            &settings,
+        );
+        assert!(message.contains("requires sign-in"));
+        assert_eq!(auth_code.as_deref(), Some("authentication-required"));
+
+        let (_, forbidden_code) =
+            friendly_failure(&["YtDlp: HTTP Error 403: Forbidden".to_string()], &settings);
+        assert_eq!(forbidden_code.as_deref(), Some("forbidden"));
     }
 
     #[test]
